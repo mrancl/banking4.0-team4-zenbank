@@ -1,0 +1,46 @@
+# Environment & secrets & organizer pack
+.env
+.env.*
+!.env.example
+backend/.env
+backend/.env.*
+!backend/.env.example
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+*.pem
+*.jwk
+*.key
+*.p12
+Banking-4.0-Team-04/
+sample_result.json
+Starter -Hackaton 4.0.pdf
+participant-criteria.html
+
+# Python
+backend/.venv/
+.venv/
+**/__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Node / Frontend / Backend
+node_modules/
+dist/
+backend/dist/
+frontend/node_modules/
+frontend/dist/
+*.tsbuildinfo
+
+# Databases & logs
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
+# OS / Editor
+.DS_Store
+.vscode/
+.idea/

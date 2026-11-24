@@ -1,0 +1,267 @@
+export type CustomerId = 'radu' | 'alex' | 'maria';
+export type DemoScenario = 'data_update' | 'payment_restricted';
+export type KycStatus = 'RECONFIRMATION_NEEDED' | 'INCOMPLETE_UPDATE' | 'UP_TO_DATE';
+export type Language = 'ro';
+
+export interface StructuredAddress {
+  streetAddress: string;
+  locality: string;
+  postalCode: string;
+  country: string;
+  formatted: string;
+}
+
+export interface KycIncomeProfile {
+  source: string;
+  employer: string;
+  bracket: string;
+  basisLabel: string;
+}
+
+export interface ZenBankCustomerProfile {
+  id: CustomerId;
+  givenName: string;
+  familyName: string;
+  birthdate: string;
+  citizenshipLabel: string;
+  documentType: 'EU_PASSPORT';
+  documentNumberMasked: string;
+  currentAddress: StructuredAddress;
+  currentIncome: KycIncomeProfile;
+  kycStatus: KycStatus;
+  paymentRestricted: boolean;
+  restrictionReason: string | null;
+  lastReconfirmedAt: string | null;
+}
+
+export interface TrustCheckItem {
+  id: string;
+  label: string;
+  status: 'PASS' | 'FAIL' | 'WARN' | 'INFO';
+  detail: string;
+}
+
+export interface VerificationOutcome {
+  status: 'SATISFIED' | 'NOT_SATISFIED' | 'REFUSED' | string;
+  basis?: string;
+  withheld?: string[];
+  answers?: Record<string, unknown>;
+}
+
+export interface VerificationCredentialResult {
+  type?: string;
+  format?: string;
+  documentType?: string;
+  claims?: Record<string, unknown>;
+  issuer?: {
+    country?: string;
+    authority?: string;
+    identifier?: string;
+  };
+  warnings?: string[];
+  checks?: {
+    issuerSignature?: boolean;
+    holderBinding?: boolean;
+    validity?: boolean;
+    trustedIssuer?: boolean;
+    status?: string;
+    [key: string]: unknown;
+  };
+}
+
+export interface DecryptedVerificationPayload {
+  iss?: string;
+  aud?: string | string[];
+  iat?: number;
+  exp?: number;
+  jti?: string;
+  typ?: string;
+  schema?: string;
+  transactionId?: string;
+  outcome: VerificationOutcome;
+  credentials?: VerificationCredentialResult[];
+}
+
+export interface IdentitySubject {
+  givenName: string;
+  familyName: string;
+  birthdate: string;
+}
+
+export interface AddressFieldDiff {
+  field: 'streetAddress' | 'locality' | 'postalCode' | 'country';
+  label: string;
+  currentValue: string;
+  verifiedValue: string;
+  changed: boolean;
+}
+
+export interface AddressDiff {
+  hasChanges: boolean;
+  changedFields: Array<'streetAddress' | 'locality' | 'postalCode' | 'country'>;
+  fields: AddressFieldDiff[];
+}
+
+export interface IncomeFieldDiff {
+  field: 'source' | 'employer' | 'bracket';
+  label: string;
+  currentValue: string;
+  verifiedValue: string;
+  changed: boolean;
+}
+
+export interface IncomeDiff {
+  hasChanges: boolean;
+  changedFields: Array<'source' | 'employer' | 'bracket'>;
+  fields: IncomeFieldDiff[];
+}
+
+export type RuleDecision =
+  | 'READY_FOR_CONFIRMATION'
+  | 'NO_CHANGES_CONFIRM_IDENTITY'
+  | 'PARTIAL_IDENTITY_ONLY'
+  | 'SECURITY_BLOCKED'
+  | 'UNHAPPY_PATH';
+
+export interface BankRuleEvaluation {
+  decision: RuleDecision;
+  reasonCode: string;
+  message: string;
+  checks: TrustCheckItem[];
+  verifiedIdentity: IdentitySubject | null;
+  verifiedAddress: StructuredAddress | null;
+  verifiedIncome: KycIncomeProfile | null;
+  addressDiff: AddressDiff | null;
+  incomeDiff: IncomeDiff | null;
+  withheldFields: string[];
+  revocationStatus: string;
+  canConfirmAddressUpdate: boolean;
+  canConfirmIncomeUpdate: boolean;
+  canConfirmIdentityOnly: boolean;
+}
+
+export type AgentStage =
+  | 'IDLE'
+  | 'PRE_CONSENT'
+  | 'AWAITING_WALLET'
+  | 'DIFF_READY'
+  | 'COMPLETED'
+  | 'DECLINED'
+  | 'BLOCKED';
+
+export interface ZeroPiiAgentContext {
+  stage: AgentStage;
+  documentOnFile: 'EU_PASSPORT';
+  kycStatus: KycStatus;
+  paymentRestricted: boolean;
+  restrictionCode: 'NONE' | 'KYC_UPDATE_INCOMPLETE';
+  requestedCredentials: Array<'PID' | 'ADDRESS' | 'INCOME'>;
+  verificationSummary?: {
+    identityMatched: boolean;
+    changedFields: Array<'address' | 'income'>;
+    withheldFields: string[];
+    revocationStatus: string;
+  };
+  unhappyCode?: string;
+  language: Language;
+}
+
+export type ChatCard =
+  | {
+      type: 'pre_consent';
+      purpose: string;
+      requestedCredentials: Array<{
+        credential: string;
+        vct: string;
+        attributes: string[];
+        why: string;
+      }>;
+      excludedItems: string[];
+    }
+  | {
+      type: 'wallet_qr';
+      transactionId: string;
+      profileCode: string;
+      qrSvg: string;
+      deepLink: string;
+      expiresAt: string;
+      status: string;
+    }
+  | {
+      type: 'diff_confirm';
+      pendingUpdateId: string;
+      identityMatched: boolean;
+      identityName: string;
+      identityBirthdate: string;
+      currentAddress: StructuredAddress;
+      verifiedAddress: StructuredAddress | null;
+      addressDiff: AddressDiff | null;
+      currentIncome: KycIncomeProfile;
+      verifiedIncome: KycIncomeProfile | null;
+      incomeDiff: IncomeDiff | null;
+      withheldFields: string[];
+      canUpdateAddress: boolean;
+      canUpdateIncome: boolean;
+      canConfirmIdentityOnly: boolean;
+      revocationNote: string;
+    }
+  | {
+      type: 'completed';
+      identityReconfirmed: boolean;
+      addressUpdated: boolean;
+      incomeUpdated: boolean;
+      restrictionLifted: boolean;
+      noPassportUploadRequired: boolean;
+      updatedAddress: StructuredAddress;
+      updatedIncome: KycIncomeProfile;
+      completedAt: string;
+    }
+  | {
+      type: 'recovery';
+      code: string;
+      title: string;
+      detail: string;
+      simulated: boolean;
+      canRetryEudi: boolean;
+      canConfirmIdentityOnly: boolean;
+      pendingUpdateId?: string;
+      fallbackOptions: string[];
+    };
+
+export interface ChatMessage {
+  id: string;
+  role: 'user' | 'agent';
+  text: string;
+  timestamp: string;
+  card?: ChatCard;
+}
+
+export interface AuditEvent {
+  id: string;
+  timestamp: string;
+  category: 'ZENBANK_CORE' | 'AGENT' | 'VERIFIER' | 'CRYPTO' | 'RULES' | 'SIMULATION';
+  action: string;
+  detail: string;
+  piiStored: false;
+}
+
+export interface SessionPublicState {
+  sessionId: string;
+  scenario: DemoScenario;
+  stage: AgentStage;
+  customer: ZenBankCustomerProfile;
+  messages: ChatMessage[];
+  activeVerification: {
+    transactionId: string;
+    status: string;
+    expiresAt: string;
+  } | null;
+  lastTrustChecks: TrustCheckItem[];
+  lastZeroPiiContext: ZeroPiiAgentContext | null;
+  auditLog: AuditEvent[];
+  securityBadges: {
+    llmPiiExposed: false;
+    geminiStoreEnabled: false;
+    rawTokensLogged: false;
+  };
+}
