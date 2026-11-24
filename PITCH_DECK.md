@@ -11,11 +11,11 @@
 - Formula: **`Clientul cere → Agentul orchestrează → EUDI verifică → ZenBank actualizează`**
 
 ### Slide 2 — Problema & Utilizatorul țintă (0:45 – 1:45)
-- **Persona:** Radu Stan, cetățean UE, client ZenBank identificat la deschiderea contului cu **pașaportul** (fără carte de identitate românească).
-- **Ce nu merge astăzi:** Clienții cu CI au actualizare digitală automată; clienții cu pașaport se lovesc de upload-uri de PDF/poze (pașaport, dovadă adresă, adeverință salariu), 1–3 zile de verificare manuală în back-office sau drum la sucursală — iar între timp pot primi restricții pe plăți.
+- **Persona:** Radu Stan, cetățean UE, client ZenBank care are nevoie de actualizarea digitală a datelor personale și financiare.
+- **Ce nu merge astăzi:** În lipsa unui flux digital unitar, clienții se lovesc de upload-uri de PDF/poze (act de identitate, dovadă adresă, adeverință salariu), 1–3 zile de verificare manuală în back-office sau drum la sucursală — iar între timp pot primi restricții pe plăți.
 
 ### Slide 3 — Soluția & Călătoria utilizatorului (1:45 – 2:45)
-- Asistentul ZenBank citește contextul bancar (`document: EU_PASSPORT`), explică **de ce** solicită datele înainte să deschidă wallet-ul, orchestrează verificarea reală prin **EUDI Wallet**, calculează diferențele și aplică actualizarea **doar după confirmarea explicită** a clientului.
+- Asistentul ZenBank citește contextul bancar (`document: IDENTITY_DOCUMENT`), explică **de ce** solicită datele înainte să deschidă wallet-ul, orchestrează verificarea reală prin **EUDI Wallet**, calculează diferențele și aplică actualizarea **doar după confirmarea explicită** a clientului.
 - **Minimizare date:** PID (`nume, prenume, dată naștere` — fără CNP) + Adresă + Rezumat KYC sursă venit (`sursă, angajator, tranșă` — fără salvarea sumelor lunare brute).
 
 ### Slide 4 — LIVE DEMO (2:45 – 5:45)
@@ -32,7 +32,7 @@
 
 ### Slide 5 — Impact de business & Ipoteze (5:45 – 6:45)
 - **Înainte vs. După:** `~12 câmpuri manuale → 0`, `3 documente/PDF → 0`, `1–3 zile back-office → ~20 secunde`, `0 risc de PDF falsificat`.
-- **Incluziune digitală:** Egalitate de tratament pentru rezidenții UE cu pașaport.
+- **Incluziune digitală:** Aceeași experiență digitală simplă pentru toți rezidenții UE.
 - **Ipoteze asumate:** Emisii EUDI active (PID/Adresă/Venit), Token Status List live în producție, absența alertelor AML/sancțiuni.
 
 ### Slide 6 — Arhitectură tehnică & Limită Zero-PII (6:45 – 7:30)

@@ -21,7 +21,14 @@ const chatSchema = z.object({
   quickAction: z
     .enum(['START_DATA_UPDATE', 'EXPLAIN_PAYMENT_RESTRICTION', 'EXPLAIN_PRIVACY'])
     .optional(),
+  scope: z.enum(['full', 'address', 'income']).optional(),
 });
+
+const startProfileSchema = z
+  .object({
+    scope: z.enum(['full', 'address', 'income']).optional(),
+  })
+  .optional();
 
 const confirmSchema = z.object({
   pendingUpdateId: z.string().min(1),
@@ -35,6 +42,17 @@ const scenarioSchema = z.object({
 
 const unhappySchema = z.object({
   kind: z.enum(['DECLINED', 'WITHHELD_ADDRESS', 'EXPIRED', 'WALLET_ERROR']),
+});
+
+const startVerificationSchema = z
+  .object({
+    mode: z.enum(['cross_device', 'same_device_native', 'same_device_web']).optional(),
+  })
+  .optional();
+
+const claimSchema = z.object({
+  transactionId: z.string().min(1).max(120).optional(),
+  responseCode: z.string().min(1).max(2048),
 });
 
 export interface ServerContext {
@@ -63,8 +81,13 @@ export async function createApp(
   },
 ): Promise<ServerContext> {
   const app = express();
+  app.set('etag', false);
   app.use(cors());
   app.use(express.json({ limit: '1mb' }));
+  app.use('/api', (_req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store');
+    next();
+  });
 
   let verifierClient: VerifierClient;
   let jwks: JwksResolver;
@@ -121,6 +144,8 @@ export async function createApp(
     issuer: config.verifierUrl,
     audience: config.resultAudience,
     profileCode: config.profileCode,
+    webReturnUri: config.webReturnUri,
+    nativeReturnUri: config.nativeReturnUri,
     privateKeyPem: effectivePrivateKeyPem,
   });
 
@@ -131,6 +156,9 @@ export async function createApp(
       profileCode: config.profileCode,
       resultKeyLoaded: Boolean(config.resultPrivateKeyPem),
       geminiConfigured: Boolean(config.geminiApiKey),
+      geminiModel: config.geminiModel,
+      webReturnUriConfigured: Boolean(config.webReturnUri),
+      nativeReturnUriConfigured: Boolean(config.nativeReturnUri),
     });
   });
 
@@ -165,6 +193,7 @@ export async function createApp(
         resolveSessionId(req),
         parsed.message,
         parsed.quickAction,
+        parsed.scope,
       );
       res.json(state);
     } catch (err) {
@@ -174,8 +203,26 @@ export async function createApp(
 
   app.post('/api/verifications/start', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const state = await orchestrator.startVerification(resolveSessionId(req));
+      const parsed = startVerificationSchema.parse(req.body);
+      const state = await orchestrator.startVerification(
+        resolveSessionId(req),
+        parsed?.mode ?? 'cross_device',
+      );
       res.status(201).json(state);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.post('/api/verifications/claim', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const parsed = claimSchema.parse(req.body);
+      const state = await orchestrator.claimVerification(
+        resolveSessionId(req),
+        parsed.responseCode,
+        parsed.transactionId,
+      );
+      res.json(state);
     } catch (err) {
       next(err);
     }
@@ -193,6 +240,15 @@ export async function createApp(
       }
     },
   );
+
+  app.post('/api/profile/start-update', (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const parsed = startProfileSchema.parse(req.body);
+      res.json(orchestrator.startProfileUpdate(resolveSessionId(req), parsed?.scope ?? 'full'));
+    } catch (err) {
+      next(err);
+    }
+  });
 
   app.post('/api/profile/confirm-update', (req: Request, res: Response, next: NextFunction) => {
     try {

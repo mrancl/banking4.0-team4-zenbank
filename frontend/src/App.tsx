@@ -1,67 +1,117 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { MessageCircle, User, X } from 'lucide-react';
 import { api } from './api';
 import { ChatStream } from './components/ChatStream';
-import { HeaderBar } from './components/HeaderBar';
-import { InspectorDrawer } from './components/InspectorDrawer';
-import { ProfileSidebar } from './components/ProfileSidebar';
+import { HeaderBar, type MobileTab } from './components/HeaderBar';
+import { HomeTab } from './components/HomeTab';
 import type {
   CustomerId,
-  DemoScenario,
-  HealthResponse,
   SessionPublicState,
+  VerificationLaunchMode,
+  VerificationScope,
 } from './types';
+
+declare global {
+  interface Window {
+    __zenbankHandleEudiCallback?: (
+      responseCode?: string | null,
+      walletError?: string | null,
+    ) => void;
+    __zenbankPendingEudiCallback?: {
+      responseCode?: string | null;
+      walletError?: string | null;
+    };
+  }
+}
+
+const ACTIVE_TX_STORAGE_KEY = 'zenbank_active_tx_id';
+
+function detectAndroidWrapper(): boolean {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+  try {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('client') === 'android' || navigator.userAgent.includes('ZenBankAndroid')) {
+      window.sessionStorage.setItem('zenbank_client', 'android');
+      return true;
+    }
+    return window.sessionStorage.getItem('zenbank_client') === 'android';
+  } catch {
+    return navigator.userAgent.includes('ZenBankAndroid');
+  }
+}
+
+function extractCallbackParams(): { responseCode: string | null; walletError: string | null } {
+  if (typeof window === 'undefined') {
+    return { responseCode: null, walletError: null };
+  }
+  const searchParams = new URLSearchParams(window.location.search);
+  const hashRaw = window.location.hash.startsWith('#')
+    ? window.location.hash.slice(1)
+    : window.location.hash;
+  const hashQuery = hashRaw.includes('?') ? hashRaw.slice(hashRaw.indexOf('?') + 1) : hashRaw;
+  const hashParams = new URLSearchParams(hashQuery);
+
+  const responseCode =
+    hashParams.get('response_code') ?? searchParams.get('response_code') ?? null;
+  const walletError =
+    hashParams.get('error_description') ??
+    hashParams.get('error') ??
+    searchParams.get('error_description') ??
+    searchParams.get('error') ??
+    null;
+
+  return {
+    responseCode: responseCode?.trim() || null,
+    walletError: walletError?.trim() || null,
+  };
+}
 
 export function App() {
   const [session, setSession] = useState<SessionPublicState | null>(null);
-  const [health, setHealth] = useState<HealthResponse | null>(null);
+  const [sessionReady, setSessionReady] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<MobileTab>('home');
+  const [profileFlowOpen, setProfileFlowOpen] = useState(false);
+  const [confirmedIds, setConfirmedIds] = useState<Set<string>>(() => new Set());
+  const [isAndroidWrapper] = useState<boolean>(() => detectAndroidWrapper());
+  const [webReturnUriConfigured, setWebReturnUriConfigured] = useState(false);
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
+    try {
+      return window.localStorage.getItem('zenbank_theme') === 'light' ? 'light' : 'dark';
+    } catch {
+      return 'dark';
+    }
+  });
 
   useEffect(() => {
-    void (async () => {
-      try {
-        const [h, s] = await Promise.all([api.getHealth(), api.getSession()]);
-        setHealth(h);
-        setSession(s);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Conexiunea la server a eșuat');
-      }
-    })();
-  }, []);
+    document.documentElement.dataset.theme = theme;
+    try {
+      window.localStorage.setItem('zenbank_theme', theme);
+    } catch {
+      // ignore storage errors
+    }
+  }, [theme]);
 
   const activeTxId = session?.activeVerification?.transactionId ?? null;
+  const activeTxRef = useRef<string | null>(null);
+  activeTxRef.current = activeTxId;
 
   useEffect(() => {
-    if (!activeTxId) {
-      return;
-    }
-
-    let cancelled = false;
-    const poll = async () => {
-      try {
-        const next = await api.pollVerification(activeTxId);
-        if (!cancelled) {
-          setSession(next);
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Verificarea statusului a eșuat');
-        }
+    try {
+      if (activeTxId) {
+        window.localStorage.setItem(ACTIVE_TX_STORAGE_KEY, activeTxId);
+      } else if (session) {
+        window.localStorage.removeItem(ACTIVE_TX_STORAGE_KEY);
       }
-    };
+    } catch {
+      // ignore storage errors
+    }
+  }, [activeTxId, session]);
 
-    const intervalId = window.setInterval(() => {
-      void poll();
-    }, 2000);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(intervalId);
-    };
-  }, [activeTxId]);
-
-  const runAction = async (fn: () => Promise<SessionPublicState>) => {
+  const runAction = useCallback(async (fn: () => Promise<SessionPublicState>) => {
     setLoading(true);
     setError(null);
     try {
@@ -72,85 +122,313 @@ export function App() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
+
+  const handleEudiCallback = useCallback(
+    (responseCode?: string | null, walletError?: string | null) => {
+      const code = responseCode?.trim();
+      const errMsg = walletError?.trim();
+      if (code) {
+        const savedTxId = (() => {
+          if (activeTxRef.current) return activeTxRef.current;
+          try {
+            return window.localStorage.getItem(ACTIVE_TX_STORAGE_KEY) || undefined;
+          } catch {
+            return undefined;
+          }
+        })();
+        void runAction(async () => {
+          const next = await api.claimVerification(code, savedTxId);
+          try {
+            window.localStorage.removeItem(ACTIVE_TX_STORAGE_KEY);
+          } catch {
+            // ignore storage errors
+          }
+          if (next.flowChannel === 'profile') {
+            setProfileFlowOpen(true);
+            setActiveTab('home');
+          } else if (next.flowChannel === 'chat') {
+            setProfileFlowOpen(false);
+            setActiveTab('chat');
+          }
+          return next;
+        });
+        return;
+      }
+
+      if (errMsg) {
+        const currentTx = activeTxRef.current;
+        if (currentTx) {
+          void api
+            .pollVerification(currentTx)
+            .then((next) => {
+              setSession(next);
+              if (next.stage === 'AWAITING_WALLET') {
+                setError(`EUDI Wallet: ${errMsg}`);
+              }
+            })
+            .catch(() => {
+              setError(`EUDI Wallet: ${errMsg}`);
+            });
+        } else {
+          setError(`EUDI Wallet: ${errMsg}`);
+        }
+      }
+    },
+    [runAction],
+  );
+
+  const callbackRef = useRef(handleEudiCallback);
+  callbackRef.current = handleEudiCallback;
+
+  useEffect(() => {
+    if (!sessionReady) {
+      return;
+    }
+    window.__zenbankHandleEudiCallback = (responseCode, walletError) => {
+      callbackRef.current(responseCode, walletError);
+    };
+    const pending = window.__zenbankPendingEudiCallback;
+    if (pending) {
+      delete window.__zenbankPendingEudiCallback;
+      callbackRef.current(pending.responseCode, pending.walletError);
+    }
+    return () => {
+      delete window.__zenbankHandleEudiCallback;
+    };
+  }, [sessionReady]);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const [health, s] = await Promise.all([
+          api.getHealth().catch(() => null),
+          api.getSession(),
+        ]);
+        if (health) {
+          setWebReturnUriConfigured(Boolean(health.webReturnUriConfigured));
+        }
+        setSession(s);
+        setSessionReady(true);
+
+        const { responseCode, walletError } = extractCallbackParams();
+        if (responseCode || walletError) {
+          window.history.replaceState({}, '', isAndroidWrapper ? '/?client=android' : '/');
+          callbackRef.current(responseCode, walletError);
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Conexiunea la server a eșuat');
+      }
+    })();
+  }, [isAndroidWrapper]);
+
+  useEffect(() => {
+    if (!activeTxId) {
+      return;
+    }
+
+    let cancelled = false;
+    let inFlight = false;
+
+    const poll = async () => {
+      if (cancelled || inFlight) {
+        return;
+      }
+      inFlight = true;
+      try {
+        const next = await api.pollVerification(activeTxId);
+        if (!cancelled) {
+          setError(null);
+          setSession(next);
+        }
+      } catch (err) {
+        if (!cancelled && document.visibilityState !== 'hidden') {
+          setError(err instanceof Error ? err.message : 'Verificarea statusului a eșuat');
+        }
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    const handleResume = () => {
+      if (document.visibilityState === 'visible') {
+        void poll();
+      }
+    };
+
+    const handleFocus = () => {
+      void poll();
+    };
+
+    const intervalId = window.setInterval(() => {
+      void poll();
+    }, 2000);
+
+    document.addEventListener('visibilitychange', handleResume);
+    window.addEventListener('focus', handleFocus);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', handleResume);
+      window.removeEventListener('focus', handleFocus);
+    };
+  }, [activeTxId]);
+
+  const launchMode: VerificationLaunchMode = isAndroidWrapper
+    ? 'same_device_native'
+    : webReturnUriConfigured && /android/i.test(navigator.userAgent)
+      ? 'same_device_web'
+      : 'cross_device';
 
   if (!session) {
     return (
-      <div className="app-shell" style={{ padding: 40, textAlign: 'center' }}>
-        {error ? (
-          <div className="restriction-alert" style={{ maxWidth: 480, margin: '0 auto' }}>
-            {error}
+      <div className="viewport-stage">
+        <div className="mobile-frame">
+          <div className="mobile-loading">
+            {error ? (
+              <div className="restriction-card" style={{ width: '100%' }}>
+                {error}
+              </div>
+            ) : (
+              <p style={{ color: 'var(--text-muted)', fontSize: 14 }}>Se încarcă ZenBank…</p>
+            )}
           </div>
-        ) : (
-          <p>Se încarcă spațiul ZenBank EUDI…</p>
-        )}
+        </div>
       </div>
     );
   }
 
+  const hasOngoingStep = Boolean(activeTxId) || session.stage === 'DIFF_READY';
+  const hasProfileAttention =
+    session.flowChannel === 'profile' && hasOngoingStep && activeTab !== 'home';
+  const hasChatAttention =
+    session.flowChannel === 'chat' && hasOngoingStep && activeTab !== 'chat';
+
   return (
-    <div className="app-shell">
-      <HeaderBar
-        customerId={session.customer.id}
-        scenario={session.scenario}
-        trustChecks={session.lastTrustChecks}
-        verifierMode={health?.verifierMode}
-        profileCode={health?.profileCode}
-        loading={loading}
-        onSwitchScenario={(cid: CustomerId, sc: DemoScenario) =>
-          void runAction(() => api.switchScenario(cid, sc))
-        }
-        onReset={() => void runAction(() => api.resetDemo())}
-        onOpenInspector={() => setInspectorOpen(true)}
-      />
-
-      {error && (
-        <div
-          className="restriction-alert"
-          style={{ maxWidth: 1240, margin: '12px auto 0', width: 'calc(100% - 40px)' }}
-        >
-          <strong>Eroare:</strong> {error}
-        </div>
-      )}
-
-      <main className="workspace">
-        <ProfileSidebar
-          customer={session.customer}
+    <div className="viewport-stage">
+      <div className="mobile-frame">
+        <HeaderBar
+          customerId={session.customer.id}
+          activeTab={activeTab}
+          theme={theme}
           loading={loading}
-          onQuickPrompt={(message, quickAction) =>
-            void runAction(() => api.sendChat(message, quickAction))
-          }
+          onToggleTheme={() => setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'))}
+          onSwitchCustomer={(cid: CustomerId) => {
+            setConfirmedIds(new Set());
+            setProfileFlowOpen(false);
+            setActiveTab('home');
+            void runAction(() => api.switchScenario(cid, 'data_update'));
+          }}
+          onReset={() => {
+            setConfirmedIds(new Set());
+            setProfileFlowOpen(false);
+            setActiveTab('home');
+            void runAction(() => api.resetDemo());
+          }}
         />
 
-        <ChatStream
-          messages={session.messages}
-          loading={loading}
-          activeTransactionId={activeTxId}
-          onSendChat={(message) => void runAction(() => api.sendChat(message))}
-          onStartVerification={() => void runAction(() => api.startVerification())}
-          onConfirmUpdate={(pendingUpdateId, mode) =>
-            void runAction(() => api.confirmUpdate(pendingUpdateId, mode))
-          }
-          onRetryVerification={() => void runAction(() => api.startVerification())}
-        />
-      </main>
+        {error && (
+          <div className="mobile-error-banner" role="alert">
+            <span>
+              <strong>Eroare:</strong> {error}
+            </span>
+            <button
+              type="button"
+              className="error-dismiss-btn"
+              aria-label="Închide eroarea"
+              onClick={() => setError(null)}
+            >
+              <X size={14} />
+            </button>
+          </div>
+        )}
 
-      <InspectorDrawer
-        open={inspectorOpen}
-        onClose={() => setInspectorOpen(false)}
-        trustChecks={session.lastTrustChecks}
-        zeroPiiContext={session.lastZeroPiiContext}
-        auditLog={session.auditLog}
-        securityBadges={session.securityBadges}
-        loading={loading}
-        onSimulateUnhappy={(kind) =>
-          void runAction(async () => {
-            const next = await api.simulateUnhappy(kind);
-            setInspectorOpen(false);
-            return next;
-          })
-        }
-      />
+        <main className="mobile-body">
+          {activeTab === 'home' && (
+            <HomeTab
+              customer={session.customer}
+              stage={session.stage}
+              flowChannel={session.flowChannel}
+              activeFlowCard={session.activeFlowCard}
+              activeTransactionId={activeTxId}
+              confirmedIds={confirmedIds}
+              profileFlowOpen={profileFlowOpen}
+              loading={loading}
+              onStartProfileUpdate={(scope?: VerificationScope) => {
+                void runAction(async () => {
+                  const next = await api.startProfileUpdate(scope);
+                  setProfileFlowOpen(true);
+                  return next;
+                });
+              }}
+              onCloseProfileFlow={() => setProfileFlowOpen(false)}
+              onResumeProfileFlow={() => setProfileFlowOpen(true)}
+              onStartVerification={() => void runAction(() => api.startVerification(launchMode))}
+              onConfirmUpdate={(pendingUpdateId, mode) => {
+                setConfirmedIds((prev) => new Set(prev).add(pendingUpdateId));
+                void runAction(() => api.confirmUpdate(pendingUpdateId, mode));
+              }}
+              onRetryVerification={() => void runAction(() => api.startVerification(launchMode))}
+              onOpenChat={() => {
+                setProfileFlowOpen(false);
+                setActiveTab('chat');
+              }}
+            />
+          )}
+
+          {activeTab === 'chat' && (
+            <ChatStream
+              messages={session.messages}
+              stage={session.stage}
+              flowChannel={session.flowChannel}
+              loading={loading}
+              activeTransactionId={activeTxId}
+              confirmedIds={confirmedIds}
+              onSendChat={(message, quickAction, scope) => {
+                setProfileFlowOpen(false);
+                void runAction(() => api.sendChat(message, quickAction, scope));
+              }}
+              onStartVerification={() => void runAction(() => api.startVerification(launchMode))}
+              onConfirmUpdate={(pendingUpdateId, mode) => {
+                setConfirmedIds((prev) => new Set(prev).add(pendingUpdateId));
+                void runAction(() => api.confirmUpdate(pendingUpdateId, mode));
+              }}
+              onRetryVerification={() => void runAction(() => api.startVerification(launchMode))}
+              onGoHome={() => {
+                setProfileFlowOpen(false);
+                setActiveTab('home');
+              }}
+            />
+          )}
+        </main>
+
+        <nav className="mobile-tabbar" aria-label="Navigare aplicație">
+          <button
+            type="button"
+            className={`tab-btn ${activeTab === 'home' ? 'active' : ''}`}
+            onClick={() => setActiveTab('home')}
+          >
+            <span className="tab-icon-wrap">
+              <User size={20} />
+              {hasProfileAttention && <span className="tab-dot" aria-hidden="true" />}
+            </span>
+            <span>Datele mele</span>
+          </button>
+
+          <button
+            type="button"
+            className={`tab-btn ${activeTab === 'chat' ? 'active' : ''}`}
+            onClick={() => setActiveTab('chat')}
+          >
+            <span className="tab-icon-wrap">
+              <MessageCircle size={20} />
+              {hasChatAttention && <span className="tab-dot" aria-hidden="true" />}
+            </span>
+            <span>Chat</span>
+          </button>
+        </nav>
+      </div>
     </div>
   );
 }

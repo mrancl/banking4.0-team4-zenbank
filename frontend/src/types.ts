@@ -1,6 +1,8 @@
 export type CustomerId = 'radu' | 'alex' | 'maria';
 export type DemoScenario = 'data_update' | 'payment_restricted';
 export type KycStatus = 'RECONFIRMATION_NEEDED' | 'INCOMPLETE_UPDATE' | 'UP_TO_DATE';
+export type VerificationScope = 'full' | 'address' | 'income';
+export type VerificationLaunchMode = 'cross_device' | 'same_device_native' | 'same_device_web';
 export type AgentStage =
   | 'IDLE'
   | 'PRE_CONSENT'
@@ -9,6 +11,8 @@ export type AgentStage =
   | 'COMPLETED'
   | 'DECLINED'
   | 'BLOCKED';
+
+export type FlowChannel = 'profile' | 'chat';
 
 export interface StructuredAddress {
   streetAddress: string;
@@ -31,7 +35,7 @@ export interface ZenBankCustomerProfile {
   familyName: string;
   birthdate: string;
   citizenshipLabel: string;
-  documentType: 'EU_PASSPORT';
+  documentType: 'IDENTITY_DOCUMENT';
   documentNumberMasked: string;
   currentAddress: StructuredAddress;
   currentIncome: KycIncomeProfile;
@@ -39,6 +43,8 @@ export interface ZenBankCustomerProfile {
   paymentRestricted: boolean;
   restrictionReason: string | null;
   lastReconfirmedAt: string | null;
+  addressVerified?: boolean;
+  incomeVerified?: boolean;
 }
 
 export interface TrustCheckItem {
@@ -79,6 +85,8 @@ export interface IncomeDiff {
 export type ChatCard =
   | {
       type: 'pre_consent';
+      scope?: VerificationScope;
+      profileCode?: string;
       purpose: string;
       requestedCredentials: Array<{
         credential: string;
@@ -92,6 +100,7 @@ export type ChatCard =
       type: 'wallet_qr';
       transactionId: string;
       profileCode: string;
+      sameDevice?: boolean;
       qrSvg: string;
       deepLink: string;
       expiresAt: string;
@@ -100,6 +109,8 @@ export type ChatCard =
   | {
       type: 'diff_confirm';
       pendingUpdateId: string;
+      scope?: VerificationScope;
+      profileCode?: string;
       identityMatched: boolean;
       identityName: string;
       identityBirthdate: string;
@@ -117,11 +128,13 @@ export type ChatCard =
     }
   | {
       type: 'completed';
+      scope?: VerificationScope;
+      profileCode?: string;
       identityReconfirmed: boolean;
       addressUpdated: boolean;
       incomeUpdated: boolean;
       restrictionLifted: boolean;
-      noPassportUploadRequired: boolean;
+      noDocumentUploadRequired: boolean;
       updatedAddress: StructuredAddress;
       updatedIncome: KycIncomeProfile;
       completedAt: string;
@@ -138,11 +151,29 @@ export type ChatCard =
       fallbackOptions: string[];
     };
 
+export interface AccountCheckItem {
+  id: 'identity' | 'address' | 'income' | 'payments';
+  label: string;
+  status: 'OK' | 'ACTION_REQUIRED' | 'BLOCKED';
+  summary: string;
+}
+
+export interface AccountStatusCheck {
+  checkedAt: string;
+  dataUpdateRequired: boolean;
+  paymentRestricted: boolean;
+  kycStatus: KycStatus;
+  eudiRouteAvailable: boolean;
+  missingItems: string[];
+  checks: AccountCheckItem[];
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'agent';
   text: string;
   timestamp: string;
+  accountCheck?: AccountStatusCheck;
   card?: ChatCard;
 }
 
@@ -157,11 +188,15 @@ export interface AuditEvent {
 
 export interface ZeroPiiAgentContext {
   stage: AgentStage;
-  documentOnFile: 'EU_PASSPORT';
+  documentOnFile: 'IDENTITY_DOCUMENT';
   kycStatus: KycStatus;
   paymentRestricted: boolean;
   restrictionCode: 'NONE' | 'KYC_UPDATE_INCOMPLETE';
+  dataUpdateRequired: boolean;
+  missingItems: string[];
   requestedCredentials: Array<'PID' | 'ADDRESS' | 'INCOME'>;
+  selectedScope?: VerificationScope;
+  selectedProfileCode?: string;
   verificationSummary?: {
     identityMatched: boolean;
     changedFields: Array<'address' | 'income'>;
@@ -176,15 +211,21 @@ export interface SessionPublicState {
   sessionId: string;
   scenario: DemoScenario;
   stage: AgentStage;
+  flowChannel: FlowChannel | null;
+  selectedScope?: VerificationScope;
+  selectedProfileCode?: string;
+  activeFlowCard: ChatCard | null;
   customer: ZenBankCustomerProfile;
   messages: ChatMessage[];
   activeVerification: {
     transactionId: string;
     status: string;
+    sameDevice?: boolean;
     expiresAt: string;
   } | null;
   lastTrustChecks: TrustCheckItem[];
   lastZeroPiiContext: ZeroPiiAgentContext | null;
+  lastLlmMeta: { usedGemini: boolean; model: string; fallbackReason?: string } | null;
   auditLog: AuditEvent[];
   securityBadges: {
     llmPiiExposed: false;
@@ -199,4 +240,7 @@ export interface HealthResponse {
   profileCode: string;
   resultKeyLoaded: boolean;
   geminiConfigured: boolean;
+  geminiModel?: string;
+  webReturnUriConfigured?: boolean;
+  nativeReturnUriConfigured?: boolean;
 }

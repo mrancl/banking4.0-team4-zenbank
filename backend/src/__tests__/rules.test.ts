@@ -416,4 +416,50 @@ describe('evaluateVerificationResult & claimsParser', () => {
     expect(res.verifiedIncome?.bracket).toContain('EUR / an fiscal 2025');
     expect(res.verifiedIncome?.basisLabel).toContain('nu salariu lunar net');
   });
+
+  it('supports minimal address-only profile (qa-address-23) with ADDRESS attestation and no PID', () => {
+    const radu = createSeedCustomer('radu', 'data_update');
+    const payload: DecryptedVerificationPayload = {
+      schema: 'eudi-verification-result/v1',
+      transactionId: 'tx-qa-address-23',
+      outcome: { status: 'SATISFIED', basis: 'DISCLOSURE' },
+      credentials: [
+        {
+          type: 'ADDRESS',
+          format: 'dc+sd-jwt',
+          documentType: 'urn:banking40:sandbox:address:1',
+          claims: {
+            address: {
+              formatted: 'Strada Exemplului 13, 300001 Timișoara, România',
+            },
+          },
+          issuer: { country: 'RO', authority: 'Banking 4.0 Sandbox' },
+          checks: {
+            issuerSignature: true,
+            holderBinding: true,
+            validity: true,
+            trustedIssuer: true,
+            status: 'NOT_CHECKED',
+          },
+        },
+      ],
+    };
+
+    const res = evaluateVerificationResult({
+      customer: radu,
+      payload,
+      cryptoChecks: [],
+      acknowledged: true,
+      requestedScope: 'address',
+    });
+
+    expect(res.decision).toBe('READY_FOR_CONFIRMATION');
+    expect(res.canConfirmAddressUpdate).toBe(true);
+    expect(res.canConfirmIncomeUpdate).toBe(false);
+    expect(res.canConfirmIdentityOnly).toBe(false);
+    expect(res.verifiedAddress?.streetAddress).toBe('Strada Exemplului 13');
+    expect(res.verifiedIncome).toBeNull();
+    expect(res.incomeDiff).toBeNull();
+    expect(res.checks.some((c) => c.id === 'zenbank_customer_binding' && c.status === 'INFO')).toBe(true);
+  });
 });

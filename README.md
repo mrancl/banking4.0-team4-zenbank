@@ -4,7 +4,7 @@
 
 > **Același ZenBank. Aceeași nevoie. Aceeași experiență digitală — indiferent de documentul de identitate cu care ai început relația cu banca.**
 
-**ZenBank EUDI Data Update** permite cetățenilor UE înregistrați la bancă prin **pașaport** (și care astăzi nu au fluxul digital automat bazat pe cartea de identitate românească) să își actualizeze complet datele KYC direct în aplicația ZenBank folosind **EUDI Wallet (`PID` + `Adresă` + `Atestare venit`)**, reguli deterministe pe backend și un asistent conversațional **Zero-PII** bazat pe Gemini — cu **0 documente încărcate** și **0 câmpuri completate manual**.
+**ZenBank EUDI Data Update** permite clienților bancari (inclusiv cetățenilor UE fără flux automat pe carte de identitate românească) să își actualizeze complet datele KYC direct în aplicația ZenBank folosind **EUDI Wallet (`PID` + `Adresă` + `Atestare venit`)**, reguli deterministe pe backend și un asistent conversațional **Zero-PII** bazat pe Gemini — cu **0 documente încărcate** și **0 câmpuri completate manual**.
 
 ---
 
@@ -12,11 +12,11 @@
 
 **Formula:** `Clientul cere → Agentul orchestrează → EUDI verifică → ZenBank actualizează`
 
-1. **Flux principal — Actualizare date (`Radu Stan`, Pașaport UE — profil live; `Alex Popescu` și `Maria Ionescu` disponibili în selector):**
+1. **Flux principal — Actualizare date (`Radu Stan` — profil live; `Alex Popescu` și `Maria Ionescu` disponibili în selector):**
    - Clientul apasă **Actualizează-mi datele personale** în ZenBank.
-   - Agentul citește contextul ZenBank (`document: EU_PASSPORT`, adresă curentă `Bulevardul Unirii 22, 030133 București, România`, venit anterior `Nedeclarat / 10.000 – 15.000 RON`) și explică ruta EUDI în locul încărcării pașaportului și a adeverinței de venit.
+   - Agentul citește contextul ZenBank (`document: IDENTITY_DOCUMENT`, adresă curentă `Bulevardul Unirii 22, 030133 București, România`, venit anterior `Nedeclarat / 10.000 – 15.000 RON`) și explică ruta EUDI în locul încărcării actului de identitate și a adeverinței de venit.
    - Ecranul de pre-consimțământ explică clar **ce** se solicită și **de ce**:
-     - **PID (`urn:banking40:sandbox:pid-ro:1`)**: `given_name`, `family_name`, `birthdate` *(reconfirmare identitate pașaport)*
+     - **PID (`urn:banking40:sandbox:pid-ro:1`)**: `given_name`, `family_name`, `birthdate` *(reconfirmare identitate titular)*
      - **Adresă (`urn:banking40:sandbox:address:1`)**: `address.formatted` *(verificare schimbare domiciliu)*
      - **Sursă venit și angajator (`urn:banking40:sandbox:income:1`)**: `income_type`, `payer.legal_name`, `monthly_income.periods` → agregat KYC (`tranșă venit`), fără stocarea sumelor lunare brute
      - **Ignorate / nepersistate:** `personal_numeric_code` (CNP), `place_of_birth`, sumele lunare brute detaliate și încărcarea fizică de documente.
@@ -26,18 +26,18 @@
 
 2. **Mini-demo secundar în chat — Recuperare restricție plăți (`"De ce nu pot face plăți?"`):**
    - Aceeași capabilitate, declanșată reactiv din suportul conversațional.
-   - Agentul identifică `KYC_UPDATE_INCOMPLETE` (reconfirmare identitate pendinte pentru pașaport) și direcționează clientul direct în **același** motor de verificare EUDI, ridicând restricția pe plăți după confirmare.
+   - Agentul identifică `KYC_UPDATE_INCOMPLETE` (reconfirmare identitate pendinte) și direcționează clientul direct în **același** motor de verificare EUDI, ridicând restricția pe plăți după confirmare.
 
 ---
 
 ## Impact: Înainte vs. După
 
-| Indicator | Astăzi (Client cu pașaport UE) | Cu ZenBank + EUDI Wallet |
+| Indicator | Astăzi (Flux clasic cu documente) | Cu ZenBank + EUDI Wallet |
 | :--- | :--- | :--- |
 | Câmpuri completate manual | ~12 câmpuri | **0** |
-| Documente încărcate (pașaport, factură, adeverință) | 3 fișiere / drum la sucursală | **0** |
+| Documente încărcate (act de identitate, factură, adeverință) | 3 fișiere / drum la sucursală | **0** |
 | Timp de procesare KYC | 1–3 zile lucrătoare | **~20 secunde** |
-| Supra-partajare date | Scan pașaport + state de plată integrale | **PID minim + Adresă + Tranșă KYC (fără CNP sau sume brute)** |
+| Supra-partajare date | Copie act de identitate + state de plată integrale | **PID minim + Adresă + Tranșă KYC (fără CNP sau sume brute)** |
 | Risc de falsificare | PDF-uri / fotografii editabile | **VC semnat de emitent + JWE/ES256 Verifier** |
 
 **Ipoteze explicite:**
@@ -155,5 +155,5 @@ docker run -p 8080:8080 \
 - **Necesar pentru producție bancară:**
   - Înregistrare oficială ca **Relying Party** sub eIDAS 2, certificate de acces/înregistrare și validare prin **ETSI Trusted Lists** (`ETSI TS 119 612` / `602`).
   - Verificare live **Token Status List** pentru revocare (înlocuind `NOT_CHECKED`).
-  - Integrare cu motoarele KYC/AML ale băncii (Legea 129/2019, screening sancțiuni/PEP, escaladare manuală pentru schimbări de nume/identitate).
+  - Integrare cu motoarele KYC/AML ale băncii (conformitate bancară, screening sancțiuni/PEP, escaladare manuală pentru schimbări de nume/identitate).
   - **PSD2 Strong Customer Authentication (SCA)** în ZenBank pentru confirmarea modificărilor sensibile de profil și registre formale GDPR de consimțământ/retenție.

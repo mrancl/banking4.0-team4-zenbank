@@ -3,6 +3,8 @@ import type {
   DemoScenario,
   HealthResponse,
   SessionPublicState,
+  VerificationLaunchMode,
+  VerificationScope,
 } from './types';
 
 const SESSION_STORAGE_KEY = 'zenbank_eudi_session_id';
@@ -19,6 +21,7 @@ function getSessionId(): string {
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const sessionId = getSessionId();
   const res = await fetch(path, {
+    cache: 'no-store',
     ...init,
     headers: {
       'Content-Type': 'application/json',
@@ -53,17 +56,35 @@ export const api = {
   sendChat(
     message: string,
     quickAction?: 'START_DATA_UPDATE' | 'EXPLAIN_PAYMENT_RESTRICTION' | 'EXPLAIN_PRIVACY',
+    scope?: VerificationScope,
   ): Promise<SessionPublicState> {
     return apiFetch('/api/chat', {
       method: 'POST',
-      body: JSON.stringify({ message, quickAction }),
+      body: JSON.stringify({ message, quickAction, ...(scope ? { scope } : {}) }),
     });
   },
 
-  startVerification(): Promise<SessionPublicState> {
+  startVerification(mode?: VerificationLaunchMode): Promise<SessionPublicState> {
     return apiFetch('/api/verifications/start', {
       method: 'POST',
-      body: JSON.stringify({}),
+      body: JSON.stringify(mode ? { mode } : {}),
+    });
+  },
+
+  claimVerification(responseCode: string, transactionId?: string): Promise<SessionPublicState> {
+    return apiFetch('/api/verifications/claim', {
+      method: 'POST',
+      body: JSON.stringify({
+        responseCode,
+        ...(transactionId ? { transactionId } : {}),
+      }),
+    });
+  },
+
+  startProfileUpdate(scope?: VerificationScope): Promise<SessionPublicState> {
+    return apiFetch('/api/profile/start-update', {
+      method: 'POST',
+      body: JSON.stringify(scope ? { scope } : {}),
     });
   },
 

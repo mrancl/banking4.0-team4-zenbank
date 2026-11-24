@@ -16,6 +16,8 @@ export interface AppConfig {
   verifierSecret: string;
   resultAudience: string;
   profileCode: string;
+  webReturnUri: string;
+  nativeReturnUri: string;
   resultPrivateKeyPem: string;
   geminiApiKey: string;
   geminiModel: string;
@@ -64,6 +66,9 @@ export function loadConfig(): AppConfig {
       process.env.EUDI_VERIFIER_RESULT_AUDIENCE?.trim() ??
       '646562f7-a30d-4536-92a8-56f358aaf035',
     profileCode: process.env.VERIFIER_PROFILE_CODE?.trim() ?? 'qa-both-23',
+    webReturnUri: process.env.EUDI_VERIFIER_RETURN_URI?.trim() ?? '',
+    nativeReturnUri:
+      process.env.EUDI_VERIFIER_NATIVE_RETURN_URI?.trim() || 'ro.banking40.team04://same-device',
     resultPrivateKeyPem: loadPrivateKeyPem(),
     geminiApiKey: process.env.GEMINI_API_KEY?.trim() ?? '',
     geminiModel: process.env.GEMINI_MODEL?.trim() || 'gemini-4-hydrogen',

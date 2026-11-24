@@ -10,6 +10,7 @@ import type {
   KycIncomeProfile,
   StructuredAddress,
   TrustCheckItem,
+  VerificationScope,
   ZenBankCustomerProfile,
 } from '../types.js';
 
@@ -73,7 +74,7 @@ export function computeIncomeDiff(
   const specs: Array<{ field: 'source' | 'employer' | 'bracket'; label: string }> = [
     { field: 'source', label: 'Sursă venit' },
     { field: 'employer', label: 'Angajator' },
-    { field: 'bracket', label: 'Tranșă venit KYC' },
+    { field: 'bracket', label: 'Interval venit' },
   ];
 
   const fields: IncomeFieldDiff[] = specs.map(({ field, label }) => {
@@ -97,13 +98,15 @@ export interface EvaluateRulesParams {
   payload: DecryptedVerificationPayload;
   cryptoChecks: TrustCheckItem[];
   acknowledged: boolean;
+  requestedScope?: VerificationScope;
 }
 
 /**
  * Deterministic ZenBank rules engine:
  * - Never reads claims unless outcome.status === 'SATISFIED'.
  * - Enforces credential cryptographic checks (issuerSignature, holderBinding, validity, trustedIssuer) and expiry.
- * - Verifies cross-credential subject binding (PID <-> Address / Income) and ZenBank customer binding.
+ * - Verifies cross-credential subject binding (PID <-> Address / Income) and ZenBank customer binding when PID is requested.
+ * - Supports dynamic minimal profile scopes ('full', 'address', 'income').
  * - Enforces revocation=NOT_CHECKED policy (no automatic identity field mutation).
  * - Computes structured address & KYC income diffs; never auto-writes without explicit user confirmation.
  */
@@ -112,7 +115,9 @@ export function evaluateVerificationResult({
   payload,
   cryptoChecks,
   acknowledged,
+  requestedScope = 'full',
 }: EvaluateRulesParams): BankRuleEvaluation {
+  const scope: VerificationScope = requestedScope;
   const checks: TrustCheckItem[] = [...cryptoChecks];
   const outcomeStatus = payload.outcome?.status ?? 'UNKNOWN';
   const withheldFields = Array.isArray(payload.outcome?.withheld)
@@ -148,8 +153,8 @@ export function evaluateVerificationResult({
       decision: 'UNHAPPY_PATH',
       reasonCode: isRefused ? 'PRESENTATION_REFUSED' : 'REQUIREMENT_NOT_SATISFIED',
       message: isRefused
-        ? 'Ai ales să nu partajezi credențialele solicitate în EUDI Wallet. Profilul tău ZenBank a rămas neschimbat.'
-        : 'Prezentarea din wallet nu a îndeplinit cerințele de verificare ZenBank. Profilul tău ZenBank a rămas neschimbat.',
+        ? 'Ai ales să nu partajezi datele din EUDI Wallet. Profilul tău ZenBank a rămas neschimbat.'
+        : 'Nu am primit toate datele necesare din EUDI Wallet. Profilul tău ZenBank a rămas neschimbat.',
       checks,
       verifiedIdentity: null,
       verifiedAddress: null,
@@ -185,7 +190,7 @@ export function evaluateVerificationResult({
       decision: 'SECURITY_BLOCKED',
       reasonCode: 'CREDENTIAL_INTEGRITY_FAILED',
       message:
-        'Blocaj de securitate: unul sau mai multe credențiale nu au trecut verificările de semnătură emitent, legare deținător, validitate sau listă de încredere.',
+        'Nu am putut confirma autenticitatea datelor din EUDI Wallet. Din motive de siguranță, actualizarea a fost oprită.',
       checks,
       verifiedIdentity: parsed.pidIdentity,
       verifiedAddress: null,
@@ -226,7 +231,7 @@ export function evaluateVerificationResult({
         decision: 'SECURITY_BLOCKED',
         reasonCode: 'CREDENTIAL_EXPIRED',
         message:
-          'Blocaj de securitate: documentul PID prezentat este expirat. Reînnoiește PID-ul în EUDI Wallet înainte de a actualiza profilul ZenBank.',
+          'Documentul tău de identitate din EUDI Wallet este expirat. Te rugăm să îl reînnoiești înainte de a actualiza profilul ZenBank.',
         checks,
         verifiedIdentity: parsed.pidIdentity,
         verifiedAddress: null,
@@ -284,28 +289,101 @@ export function evaluateVerificationResult({
   }
 
   if (!parsed.pidIdentity && !(parsed.hasPidCredential && parsed.pidHasLimitedAttestation)) {
-    checks.push({
-      id: 'zenbank_customer_binding',
-      label: 'Asociere identitate client ZenBank',
-      status: 'FAIL',
-      detail: 'Lipsesc atributele de identitate PID (given_name, family_name, birthdate).',
-    });
-    return {
-      decision: 'UNHAPPY_PATH',
-      reasonCode: 'MISSING_IDENTITY_CLAIMS',
-      message: 'Atributele de identitate verificate nu au fost incluse în răspunsul din wallet.',
-      checks,
-      verifiedIdentity: null,
-      verifiedAddress: parsed.verifiedAddress,
-      verifiedIncome: parsed.verifiedIncome,
-      addressDiff: null,
-      incomeDiff: null,
-      withheldFields,
-      revocationStatus,
-      canConfirmAddressUpdate: false,
-      canConfirmIncomeUpdate: false,
-      canConfirmIdentityOnly: false,
-    };
+    if (scope === 'income') {
+      if (!parsed.hasIncomeCredential || !parsed.verifiedIncome) {
+        checks.push({
+          id: 'zenbank_customer_binding',
+          label: 'Profil minimal de venit',
+          status: 'FAIL',
+          detail: 'Lipsesc atributele verificate de venit din răspunsul wallet.',
+        });
+        return {
+          decision: 'UNHAPPY_PATH',
+          reasonCode: 'REQUIREMENT_NOT_SATISFIED',
+          message: 'Nu am primit datele de venit din EUDI Wallet. Profilul tău ZenBank a rămas neschimbat.',
+          checks,
+          verifiedIdentity: null,
+          verifiedAddress: null,
+          verifiedIncome: null,
+          addressDiff: null,
+          incomeDiff: null,
+          withheldFields,
+          revocationStatus,
+          canConfirmAddressUpdate: false,
+          canConfirmIncomeUpdate: false,
+          canConfirmIdentityOnly: false,
+        };
+      }
+
+      checks.push({
+        id: 'zenbank_customer_binding',
+        label: 'Profil minimal de venit',
+        status: 'INFO',
+        detail:
+          'Profil minimal (qa-income-23): titularul este deja autentificat în ZenBank; s-au solicitat strict datele de venit.',
+      });
+    } else if (scope === 'address') {
+      if (
+        !parsed.hasAddressCredential ||
+        !parsed.verifiedAddress ||
+        (!parsed.verifiedAddress.streetAddress && !parsed.verifiedAddress.formatted)
+      ) {
+        checks.push({
+          id: 'zenbank_customer_binding',
+          label: 'Profil minimal de adresă',
+          status: 'FAIL',
+          detail: 'Lipsesc atributele verificate de adresă din răspunsul wallet.',
+        });
+        return {
+          decision: 'UNHAPPY_PATH',
+          reasonCode: 'REQUIREMENT_NOT_SATISFIED',
+          message:
+            'Nu am primit datele de adresă din EUDI Wallet. Profilul tău ZenBank a rămas neschimbat.',
+          checks,
+          verifiedIdentity: null,
+          verifiedAddress: null,
+          verifiedIncome: null,
+          addressDiff: null,
+          incomeDiff: null,
+          withheldFields,
+          revocationStatus,
+          canConfirmAddressUpdate: false,
+          canConfirmIncomeUpdate: false,
+          canConfirmIdentityOnly: false,
+        };
+      }
+
+      checks.push({
+        id: 'zenbank_customer_binding',
+        label: 'Profil minimal de adresă',
+        status: 'INFO',
+        detail:
+          'Profil minimal (qa-address-23): titularul este deja autentificat în ZenBank; s-a solicitat strict atestarea de adresă.',
+      });
+    } else {
+      checks.push({
+        id: 'zenbank_customer_binding',
+        label: 'Asociere identitate client ZenBank',
+        status: 'FAIL',
+        detail: 'Lipsesc atributele de identitate PID (given_name, family_name, birthdate).',
+      });
+      return {
+        decision: 'UNHAPPY_PATH',
+        reasonCode: 'MISSING_IDENTITY_CLAIMS',
+        message: 'Atributele de identitate verificate nu au fost incluse în răspunsul din wallet.',
+        checks,
+        verifiedIdentity: null,
+        verifiedAddress: parsed.verifiedAddress,
+        verifiedIncome: parsed.verifiedIncome,
+        addressDiff: null,
+        incomeDiff: null,
+        withheldFields,
+        revocationStatus,
+        canConfirmAddressUpdate: false,
+        canConfirmIncomeUpdate: false,
+        canConfirmIdentityOnly: false,
+      };
+    }
   }
 
   if (parsed.pidIdentity) {
@@ -330,7 +408,7 @@ export function evaluateVerificationResult({
           decision: 'SECURITY_BLOCKED',
           reasonCode: 'CROSS_CREDENTIAL_SUBJECT_MISMATCH',
           message:
-            'Blocaj de securitate: credențialele prezentate aparțin unor persoane diferite. Profilul tău ZenBank nu a fost modificat.',
+            'Datele trimise din EUDI Wallet par să aparțină unor persoane diferite, așa că nu putem actualiza profilul.',
           checks,
           verifiedIdentity: parsed.pidIdentity,
           verifiedAddress: null,
@@ -380,7 +458,7 @@ export function evaluateVerificationResult({
         decision: 'SECURITY_BLOCKED',
         reasonCode: 'CUSTOMER_SUBJECT_MISMATCH',
         message:
-          'Blocaj de securitate: identitatea verificată în EUDI Wallet nu corespunde cu clientul autentificat în ZenBank. Actualizarea profilului a fost blocată.',
+          'Identitatea din EUDI Wallet nu corespunde titularului acestui cont ZenBank. Pentru siguranța ta, actualizarea a fost blocată.',
         checks,
         verifiedIdentity: parsed.pidIdentity,
         verifiedAddress: null,
@@ -401,7 +479,7 @@ export function evaluateVerificationResult({
       status: 'PASS',
       detail: 'Identitatea verificată în EUDI corespunde cu clientul ZenBank autentificat (nume + dată naștere).',
     });
-  } else {
+  } else if (scope === 'full') {
     checks.push({
       id: 'zenbank_customer_binding',
       label: 'Asociere identitate client ZenBank',
@@ -411,28 +489,50 @@ export function evaluateVerificationResult({
     });
   }
 
-  // Evaluate address & income disclosures independently so withholding one still preserves the other
+  // When qa-income-23 omits payer.legal_name / income_type, preserve existing employer/source while updating bracket
+  let effectiveIncome: KycIncomeProfile | null = parsed.verifiedIncome;
+  if (scope === 'income' && parsed.verifiedIncome) {
+    const preserveEmployer =
+      !parsed.verifiedIncome.employer || parsed.verifiedIncome.employer === 'Neconfirmat';
+    const preserveSource = parsed.verifiedIncome.source === 'Venit declarat';
+    effectiveIncome = {
+      ...parsed.verifiedIncome,
+      employer: preserveEmployer ? customer.currentIncome.employer : parsed.verifiedIncome.employer,
+      source: preserveSource ? customer.currentIncome.source : parsed.verifiedIncome.source,
+    };
+  }
+
+  // Evaluate address & income disclosures independently according to the requested minimal scope
+  const expectAddress = scope !== 'income';
+  const expectIncome = scope !== 'address';
+  const canConfirmIdentityOnly = Boolean(parsed.pidIdentity);
+
   const addressWithheld =
-    withheldFields.some((f) => f.toLowerCase().includes('address') || f.toLowerCase().includes('street')) ||
-    !parsed.verifiedAddress ||
-    (!parsed.verifiedAddress.streetAddress && !parsed.verifiedAddress.formatted);
+    expectAddress &&
+    (withheldFields.some((f) => f.toLowerCase().includes('address') || f.toLowerCase().includes('street')) ||
+      !parsed.verifiedAddress ||
+      (!parsed.verifiedAddress.streetAddress && !parsed.verifiedAddress.formatted));
 
   const incomeWithheld =
-    withheldFields.some((f) => f.toLowerCase().includes('income') || f.toLowerCase().includes('bri')) ||
-    !parsed.verifiedIncome;
+    expectIncome &&
+    (withheldFields.some((f) => f.toLowerCase().includes('income') || f.toLowerCase().includes('bri')) ||
+      !effectiveIncome);
 
-  if (addressWithheld && incomeWithheld) {
+  const allExpectedWithheld =
+    (!expectAddress || addressWithheld) && (!expectIncome || incomeWithheld);
+
+  if (allExpectedWithheld && canConfirmIdentityOnly) {
     checks.push({
       id: 'profile_comparison',
-      label: 'Comparație adresă și sursă venit',
+      label: 'Comparație date solicitate',
       status: 'WARN',
-      detail: 'Atât adresa cât și atestarea de venit au fost nepartajate; reconfirmarea identității rămâne disponibilă.',
+      detail: 'Atributele solicitate nu au fost partajate; reconfirmarea identității rămâne disponibilă.',
     });
     return {
       decision: 'PARTIAL_IDENTITY_ONLY',
       reasonCode: 'ATTRIBUTES_WITHHELD',
       message:
-        'Identitatea ta corespunde cu datele din ZenBank, însă adresa și atestarea de venit nu au fost partajate. Poți confirma reconfirmarea identității acum sau poți reîncerca partajarea.',
+        'Identitatea ta a fost confirmată, însă datele solicitate nu au fost partajate. Poți confirma reconfirmarea identității acum sau poți reîncerca partajarea din EUDI Wallet.',
       checks,
       verifiedIdentity: parsed.pidIdentity,
       verifiedAddress: null,
@@ -447,12 +547,14 @@ export function evaluateVerificationResult({
     };
   }
 
-  const addressDiff = !addressWithheld && parsed.verifiedAddress
-    ? computeAddressDiff(customer.currentAddress, parsed.verifiedAddress)
-    : null;
-  const incomeDiff = !incomeWithheld && parsed.verifiedIncome
-    ? computeIncomeDiff(customer.currentIncome, parsed.verifiedIncome)
-    : null;
+  const addressDiff =
+    expectAddress && !addressWithheld && parsed.verifiedAddress
+      ? computeAddressDiff(customer.currentAddress, parsed.verifiedAddress)
+      : null;
+  const incomeDiff =
+    expectIncome && !incomeWithheld && effectiveIncome
+      ? computeIncomeDiff(customer.currentIncome, effectiveIncome)
+      : null;
 
   const hasAddressChanges = Boolean(addressDiff?.hasChanges);
   const hasIncomeChanges = Boolean(incomeDiff?.hasChanges);
@@ -461,9 +563,27 @@ export function evaluateVerificationResult({
     const missingLabel = addressWithheld ? 'adresa' : 'atestarea de venit';
     checks.push({
       id: 'profile_comparison',
-      label: 'Comparație adresă și sursă venit',
+      label: 'Comparație date solicitate',
       status: 'WARN',
       detail: `Atributele pentru ${missingLabel} nu au fost partajate; celelalte date verificate sunt pregătite pentru confirmare.`,
+    });
+  } else if (scope === 'address') {
+    checks.push({
+      id: 'profile_comparison',
+      label: 'Minimizare date · Doar adresă',
+      status: 'PASS',
+      detail: hasAddressChanges
+        ? 'Detectată adresă nouă verificată (qa-address-23); identitatea și venitul nu au fost solicitate.'
+        : 'Adresa corespunde profilului curent ZenBank (qa-address-23); identitatea și venitul nu au fost solicitate.',
+    });
+  } else if (scope === 'income') {
+    checks.push({
+      id: 'profile_comparison',
+      label: 'Minimizare date · Doar venit',
+      status: 'PASS',
+      detail: hasIncomeChanges
+        ? 'Detectată modificare a intervalului de venit (qa-income-23); identitatea și adresa nu au fost solicitate.'
+        : 'Datele de venit corespund profilului curent ZenBank (qa-income-23); identitatea și adresa nu au fost solicitate.',
     });
   } else {
     checks.push({
@@ -482,39 +602,49 @@ export function evaluateVerificationResult({
     if (hasAddressChanges) changedLabels.push('adresa de domiciliu');
     if (hasIncomeChanges) changedLabels.push('sursa de venit și angajatorul');
 
+    const readyMessage =
+      scope === 'income' && !parsed.pidIdentity
+        ? 'Intervalul tău de venit a fost verificat în EUDI Wallet! Verifică modificarea de mai jos înainte de salvare.'
+        : scope === 'address' && !parsed.pidIdentity
+          ? 'Adresa ta de domiciliu a fost verificată în EUDI Wallet! Verifică modificarea de mai jos înainte de salvare.'
+          : `Identitatea ta a fost confirmată! Am detectat informații noi pentru ${changedLabels.join(' și ')}.`;
+
     return {
       decision: 'READY_FOR_CONFIRMATION',
       reasonCode: 'PROFILE_CHANGES_DETECTED',
-      message: `Identitatea ta corespunde cu datele înregistrate la ZenBank. Am identificat actualizări verificate pentru ${changedLabels.join(' și ')}.`,
+      message: readyMessage,
       checks,
       verifiedIdentity: parsed.pidIdentity,
-      verifiedAddress: !addressWithheld ? parsed.verifiedAddress : null,
-      verifiedIncome: !incomeWithheld ? parsed.verifiedIncome : null,
+      verifiedAddress: expectAddress && !addressWithheld ? parsed.verifiedAddress : null,
+      verifiedIncome: expectIncome && !incomeWithheld ? effectiveIncome : null,
       addressDiff,
       incomeDiff,
       withheldFields,
       revocationStatus,
       canConfirmAddressUpdate: hasAddressChanges,
       canConfirmIncomeUpdate: hasIncomeChanges,
-      canConfirmIdentityOnly: true,
+      canConfirmIdentityOnly,
     };
   }
 
   return {
     decision: 'NO_CHANGES_CONFIRM_IDENTITY',
     reasonCode: 'PROFILE_UNCHANGED',
-    message:
-      'Identitatea, adresa și sursa de venit corespund cu datele din ZenBank. Confirmă mai jos pentru a finaliza reconfirmarea identității.',
+    message: canConfirmIdentityOnly
+      ? 'Datele tale din ZenBank corespund deja cu cele din EUDI Wallet. Confirmă mai jos pentru a finaliza reconfirmarea identității.'
+      : scope === 'address'
+        ? 'Adresa ta din EUDI Wallet corespunde deja cu profilul curent ZenBank.'
+        : 'Datele tale de venit din EUDI Wallet corespund deja cu profilul curent ZenBank.',
     checks,
     verifiedIdentity: parsed.pidIdentity,
-    verifiedAddress: parsed.verifiedAddress,
-    verifiedIncome: parsed.verifiedIncome,
+    verifiedAddress: expectAddress && !addressWithheld ? parsed.verifiedAddress : null,
+    verifiedIncome: expectIncome && !incomeWithheld ? effectiveIncome : null,
     addressDiff,
     incomeDiff,
     withheldFields,
     revocationStatus,
     canConfirmAddressUpdate: false,
     canConfirmIncomeUpdate: false,
-    canConfirmIdentityOnly: true,
+    canConfirmIdentityOnly,
   };
 }

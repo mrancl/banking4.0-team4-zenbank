@@ -49,8 +49,9 @@ export type FetchResultOutcome =
 export interface VerifierClient {
   getStatus(): Promise<WebsiteStatusResponse>;
   getProfiles(): Promise<WebsiteProfileResponse[]>;
-  startVerification(profileCode: string): Promise<StartVerificationResponse>;
+  startVerification(profileCode: string, returnUri?: string): Promise<StartVerificationResponse>;
   getVerificationStatus(transactionId: string): Promise<VerificationStatusResponse>;
+  claimVerification(transactionId: string, responseCode: string): Promise<VerificationStatusResponse>;
   fetchSealedResult(transactionId: string): Promise<FetchResultOutcome>;
   acknowledgeResult(transactionId: string): Promise<boolean>;
 }
@@ -73,6 +74,7 @@ export interface LiveVerifierClientConfig {
   baseUrl: string;
   websiteKey: string;
   websiteSecret: string;
+  requestTimeoutMs?: number;
 }
 
 /**
@@ -82,11 +84,13 @@ export class LiveVerifierClient implements VerifierClient {
   private readonly baseUrl: string;
   private readonly key: string;
   private readonly secret: string;
+  private readonly requestTimeoutMs: number;
 
   constructor(cfg: LiveVerifierClientConfig) {
     this.baseUrl = cfg.baseUrl.replace(/\/+$/, '');
     this.key = cfg.websiteKey;
     this.secret = cfg.websiteSecret;
+    this.requestTimeoutMs = cfg.requestTimeoutMs ?? 60_000;
   }
 
   private async request(
@@ -115,11 +119,28 @@ export class LiveVerifierClient implements VerifierClient {
       headers['Content-Type'] = 'application/json';
     }
 
-    const res = await fetch(`${this.baseUrl}${apiPath}`, {
-      method,
-      headers,
-      body: bodyStr || undefined,
-    });
+    let res: Response;
+    try {
+      res = await fetch(`${this.baseUrl}${apiPath}`, {
+        method,
+        headers,
+        body: bodyStr || undefined,
+        signal: AbortSignal.timeout(this.requestTimeoutMs),
+      });
+    } catch (err) {
+      if (err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
+        throw new VerifierHttpError(
+          504,
+          'VERIFIER_TIMEOUT',
+          'Serviciul EUDI Verifier a răspuns prea lent. Te rugăm să reîncerci.',
+        );
+      }
+      throw new VerifierHttpError(
+        502,
+        'VERIFIER_UNREACHABLE',
+        'Conexiunea cu serviciul EUDI Verifier a eșuat temporar.',
+      );
+    }
 
     if (res.ok || options.allowedStatuses?.includes(res.status)) {
       return res;
@@ -151,14 +172,50 @@ export class LiveVerifierClient implements VerifierClient {
     return (await res.json()) as WebsiteProfileResponse[];
   }
 
-  async startVerification(profileCode: string): Promise<StartVerificationResponse> {
-    const body = JSON.stringify({ profile: profileCode });
+  async startVerification(profileCode: string, returnUri?: string): Promise<StartVerificationResponse> {
+    const body = JSON.stringify({
+      profile: profileCode,
+      ...(returnUri ? { returnUri } : {}),
+    });
     const res = await this.request('POST', '/api/website/verifications', { body });
     return (await res.json()) as StartVerificationResponse;
   }
 
   async getVerificationStatus(transactionId: string): Promise<VerificationStatusResponse> {
-    const res = await this.request('GET', `/api/website/verifications/${encodeURIComponent(transactionId)}`);
+    const res = await this.request(
+      'GET',
+      `/api/website/verifications/${encodeURIComponent(transactionId)}`,
+      { allowedStatuses: [409] },
+    );
+    if (res.status === 409) {
+      let code = 'RESPONSE_CODE_REQUIRED';
+      let message: string | null = null;
+      try {
+        const json = (await res.json()) as { code?: string; message?: string };
+        code = json.code ?? code;
+        message = json.message ?? null;
+      } catch {
+        // ignore parse errors
+      }
+      return {
+        transactionId,
+        status: code,
+        reason: message,
+      };
+    }
+    return (await res.json()) as VerificationStatusResponse;
+  }
+
+  async claimVerification(
+    transactionId: string,
+    responseCode: string,
+  ): Promise<VerificationStatusResponse> {
+    const body = JSON.stringify({ responseCode });
+    const res = await this.request(
+      'POST',
+      `/api/website/verifications/${encodeURIComponent(transactionId)}/claim`,
+      { body },
+    );
     return (await res.json()) as VerificationStatusResponse;
   }
 
@@ -208,6 +265,8 @@ export class LiveVerifierClient implements VerifierClient {
 
 export type MockWalletVariant =
   | 'SATISFIED_BOTH'
+  | 'SATISFIED_ADDRESS_ONLY'
+  | 'SATISFIED_INCOME_ONLY'
   | 'SATISFIED_SAME_ADDRESS'
   | 'WITHHELD_ADDRESS'
   | 'REFUSED'
@@ -220,6 +279,9 @@ export type MockWalletVariant =
 interface MockTxState {
   transactionId: string;
   profileCode: string;
+  returnUri?: string;
+  expectedResponseCode?: string;
+  claimed?: boolean;
   status: string;
   reason?: string;
   walletError?: string;
@@ -276,17 +338,41 @@ export class MockVerifierClient implements VerifierClient {
         code: 'qa-both-23',
         name: 'ZenBank Actualizare Date (PID + Adresă + Venit)',
         mode: 'DISCLOSURE',
-        default: true,
+        default: false,
         requestedCredentials: [
           'urn:banking40:sandbox:pid-ro:1',
           'urn:banking40:sandbox:address:1',
           'urn:banking40:sandbox:income:1',
         ],
       },
+      {
+        code: 'qa-address-23',
+        name: 'ZenBank Doar Adresă (PID + Adresă)',
+        mode: 'DISCLOSURE',
+        default: false,
+        requestedCredentials: [
+          'urn:banking40:sandbox:pid-ro:1',
+          'urn:banking40:sandbox:address:1',
+        ],
+      },
+      {
+        code: 'qa-income-23',
+        name: 'ZenBank Doar Venit (Atestare Venit)',
+        mode: 'DISCLOSURE',
+        default: false,
+        requestedCredentials: ['urn:banking40:sandbox:income:1'],
+      },
+      {
+        code: 'age-18',
+        name: 'Vârstă 18+',
+        mode: 'DECISION',
+        default: true,
+        requestedCredentials: ['urn:banking40:sandbox:pid-ro:1'],
+      },
     ];
   }
 
-  async startVerification(profileCode: string): Promise<StartVerificationResponse> {
+  async startVerification(profileCode: string, returnUri?: string): Promise<StartVerificationResponse> {
     const transactionId = crypto.randomUUID();
     const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
     const deepLink = `openid4vp://?client_id=x509_hash%3Amock&request_uri=https%3A%2F%2Fmock.local%2Freq%2F${transactionId}`;
@@ -295,6 +381,13 @@ export class MockVerifierClient implements VerifierClient {
     this.txs.set(transactionId, {
       transactionId,
       profileCode,
+      ...(returnUri
+        ? {
+            returnUri,
+            expectedResponseCode: `mock-rc-${crypto.randomUUID().slice(0, 8)}`,
+            claimed: false,
+          }
+        : {}),
       status: 'CREATED',
       expiresAt,
       acknowledged: false,
@@ -303,11 +396,46 @@ export class MockVerifierClient implements VerifierClient {
     return { transactionId, deepLink, qrSvg, expiresAt };
   }
 
+  getMockResponseCode(transactionId: string): string | undefined {
+    return this.txs.get(transactionId)?.expectedResponseCode;
+  }
+
   async getVerificationStatus(transactionId: string): Promise<VerificationStatusResponse> {
     const tx = this.txs.get(transactionId);
     if (!tx) {
       throw new VerifierHttpError(404, 'NOT_FOUND', 'Verification transaction not found');
     }
+    if (tx.returnUri && tx.status === 'COMPLETED' && !tx.claimed) {
+      return {
+        transactionId: tx.transactionId,
+        status: 'RESPONSE_CODE_REQUIRED',
+        reason: 'Same-device response code required',
+        walletError: null,
+      };
+    }
+    return {
+      transactionId: tx.transactionId,
+      status: tx.status,
+      reason: tx.reason ?? null,
+      walletError: tx.walletError ?? null,
+    };
+  }
+
+  async claimVerification(
+    transactionId: string,
+    responseCode: string,
+  ): Promise<VerificationStatusResponse> {
+    const tx = this.txs.get(transactionId);
+    if (!tx) {
+      throw new VerifierHttpError(404, 'NOT_FOUND', 'Verification transaction not found');
+    }
+    if (tx.status !== 'COMPLETED') {
+      throw new VerifierHttpError(409, 'RESULT_NOT_READY', 'Wallet has not answered yet');
+    }
+    if (tx.expectedResponseCode && responseCode !== tx.expectedResponseCode) {
+      throw new VerifierHttpError(400, 'INVALID_RESPONSE_CODE', 'Invalid response code');
+    }
+    tx.claimed = true;
     return {
       transactionId: tx.transactionId,
       status: tx.status,
@@ -476,8 +604,47 @@ export class MockVerifierClient implements VerifierClient {
       },
     };
 
+    const minimalIncome = {
+      type: 'INCOME_ATTESTATION',
+      format: 'dc+sd-jwt',
+      documentType: 'urn:banking40:sandbox:income:1',
+      claims: {
+        monthly_income: {
+          periods: newIncome.claims.monthly_income.periods,
+          currency: 'RON',
+        },
+      },
+      issuer: {
+        country: 'RO',
+        authority: 'Banking 4.0 Sandbox',
+      },
+      checks: {
+        issuerSignature: true,
+        holderBinding: true,
+        validity: true,
+        trustedIssuer: true,
+        status: 'NOT_CHECKED',
+      },
+    };
+
     let body: DecryptedVerificationPayload;
     switch (variant) {
+      case 'SATISFIED_ADDRESS_ONLY':
+        body = {
+          schema: 'eudi-verification-result/v1',
+          transactionId,
+          outcome: { status: 'SATISFIED', basis: 'DISCLOSURE' },
+          credentials: [newAddress],
+        };
+        break;
+      case 'SATISFIED_INCOME_ONLY':
+        body = {
+          schema: 'eudi-verification-result/v1',
+          transactionId,
+          outcome: { status: 'SATISFIED', basis: 'DISCLOSURE' },
+          credentials: [minimalIncome],
+        };
+        break;
       case 'REFUSED':
         body = { schema: 'eudi-verification-result/v1', transactionId, outcome: { status: 'REFUSED' } };
         break;

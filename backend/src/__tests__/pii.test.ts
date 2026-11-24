@@ -71,6 +71,41 @@ describe('Zero-PII boundary & log redaction', () => {
     }
   });
 
+  it('calls Gemini for quickAction chips while locking deterministic intent and zero PII', async () => {
+    const radu = createSeedCustomer('radu', 'data_update');
+    const sentInputs: string[] = [];
+
+    const spyTransport: GeminiTransport = {
+      generateJson: vi.fn(async ({ input }) => {
+        sentInputs.push(input);
+        return {
+          intent: 'GENERAL',
+          reply: 'Profilul tău ZenBank necesită actualizarea datelor prin EUDI Wallet.',
+        };
+      }),
+    };
+
+    const assistant = new ZeroPiiAssistant({
+      transport: spyTransport,
+      model: 'gemini-4-hydrogen',
+    });
+
+    const reply = await assistant.respond({
+      userMessage: 'De ce nu pot face plăți?',
+      quickAction: 'EXPLAIN_PAYMENT_RESTRICTION',
+      customer: radu,
+      stage: 'IDLE',
+      extraForbiddenPii: ['Example Services 4 SRL', '16225'],
+    });
+
+    expect(sentInputs).toHaveLength(1);
+    expect(reply.usedGemini).toBe(true);
+    expect(reply.intent).toBe('EXPLAIN_PAYMENT_RESTRICTION');
+    expect(reply.reply).toContain('EUDI Wallet');
+    expect(sentInputs[0].toLowerCase()).not.toContain('radu');
+    expect(sentInputs[0].toLowerCase()).not.toContain('unirii');
+  });
+
   it('redacts secrets, PEMs, JWEs, evidence, income/employer keys, and PII keys in logs', () => {
     const redactedObj = redactObject({
       secret: 'super-secret-value',

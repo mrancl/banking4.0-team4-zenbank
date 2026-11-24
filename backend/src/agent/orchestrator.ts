@@ -1,5 +1,10 @@
 import crypto from 'node:crypto';
-import { applyZenBankProfileUpdate, createSeedCustomer } from '../banking/mockZenBankCore.js';
+import {
+  activatePaymentRestrictionIfUpdateNeeded,
+  applyZenBankProfileUpdate,
+  checkCustomerAccountStatus,
+  createSeedCustomer,
+} from '../banking/mockZenBankCore.js';
 import { evaluateVerificationResult } from '../banking/rules.js';
 import { safeLog } from '../logging.js';
 import {
@@ -13,6 +18,7 @@ import {
   type VerifierClient,
 } from '../verifier/client.js';
 import type {
+  AccountStatusCheck,
   AgentStage,
   AuditEvent,
   BankRuleEvaluation,
@@ -20,19 +26,28 @@ import type {
   ChatMessage,
   CustomerId,
   DemoScenario,
+  FlowChannel,
   KycIncomeProfile,
   Language,
   SessionPublicState,
   StructuredAddress,
   TrustCheckItem,
+  VerificationLaunchMode,
+  VerificationScope,
   ZenBankCustomerProfile,
   ZeroPiiAgentContext,
 } from '../types.js';
-import { ZeroPiiAssistant, buildZeroPiiContext } from './geminiAssistant.js';
+import {
+  ZeroPiiAssistant,
+  buildZeroPiiContext,
+  classifyDeterministicIntent,
+} from './geminiAssistant.js';
 
 interface ActiveVerification {
   transactionId: string;
+  scope: VerificationScope;
   profileCode: string;
+  sameDevice: boolean;
   status: string;
   expiresAt: string;
   deepLink: string;
@@ -42,6 +57,8 @@ interface ActiveVerification {
 interface PendingUpdate {
   id: string;
   transactionId: string;
+  scope: VerificationScope;
+  profileCode: string;
   verifiedAddress: StructuredAddress | null;
   verifiedIncome: KycIncomeProfile | null;
   canUpdateAddress: boolean;
@@ -53,6 +70,10 @@ interface SessionInternal {
   sessionId: string;
   scenario: DemoScenario;
   stage: AgentStage;
+  flowChannel: FlowChannel | null;
+  selectedScope: VerificationScope;
+  selectedProfileCode: string;
+  activeFlowCard: ChatCard | null;
   language: Language;
   customer: ZenBankCustomerProfile;
   messages: ChatMessage[];
@@ -61,6 +82,7 @@ interface SessionInternal {
   lastEvaluation: BankRuleEvaluation | null;
   lastTrustChecks: TrustCheckItem[];
   lastZeroPiiContext: ZeroPiiAgentContext | null;
+  lastLlmMeta: { usedGemini: boolean; model: string; fallbackReason?: string } | null;
   auditLog: AuditEvent[];
 }
 
@@ -71,6 +93,8 @@ export interface OrchestratorDeps {
   issuer: string;
   audience: string;
   profileCode: string;
+  webReturnUri?: string;
+  nativeReturnUri?: string;
   privateKeyPem: string;
 }
 
@@ -78,34 +102,88 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-function buildPreConsentCard(): ChatCard {
+export function resolveProfileCode(scope: VerificationScope, defaultFullCode: string): string {
+  switch (scope) {
+    case 'address':
+      return 'qa-address-23';
+    case 'income':
+      return 'qa-income-23';
+    case 'full':
+    default:
+      return defaultFullCode;
+  }
+}
+
+function buildPreConsentCard(scope: VerificationScope, profileCode: string): ChatCard {
+  const pidCred = {
+    credential: 'Identitatea ta',
+    vct: 'urn:banking40:sandbox:pid-ro:1',
+    attributes: ['Nume și prenume', 'Data nașterii'],
+    why: 'Confirmă că ești titularul contului înregistrat la ZenBank.',
+  };
+  const addressCred = {
+    credential: 'Adresa de domiciliu',
+    vct: 'urn:banking40:sandbox:address:1',
+    attributes: ['Adresa completă'],
+    why: 'Verifică dacă adresa ta s-a schimbat pentru a o actualiza în profil.',
+  };
+
+  if (scope === 'address') {
+    return {
+      type: 'pre_consent',
+      scope,
+      profileCode,
+      purpose: 'Doar adresă',
+      requestedCredentials: [addressCred],
+      excludedItems: [
+        'Nu solicităm date despre venit, angajator sau datele din actul de identitate',
+        'Nu stocăm CNP-ul și nici locul nașterii',
+        'Nu încarci facturi de utilități sau poze cu documente',
+      ],
+    };
+  }
+
+  if (scope === 'income') {
+    return {
+      type: 'pre_consent',
+      scope,
+      profileCode,
+      purpose: 'Doar venit',
+      requestedCredentials: [
+        {
+          credential: 'Atestare venit',
+          vct: 'urn:banking40:sandbox:income:1',
+          attributes: ['Interval de venit (media pe 6 luni)', 'Moneda'],
+          why: 'Actualizează intervalul tău de venit în profilul bancar fără adeverință de salariu.',
+        },
+      ],
+      excludedItems: [
+        'Nu solicităm adresa de domiciliu și nici datele din actul de identitate',
+        'Nu salvăm sumele exacte lunare — reținem doar intervalul de venit',
+        'Nu încarci adeverințe de salariu sau extrase PDF',
+      ],
+    };
+  }
+
   return {
     type: 'pre_consent',
-    purpose: 'Actualizarea datelor client ZenBank',
+    scope,
+    profileCode,
+    purpose: 'Profil complet',
     requestedCredentials: [
+      pidCred,
+      addressCred,
       {
-        credential: 'Identitate verificată (PID)',
-        vct: 'urn:banking40:sandbox:pid-ro:1',
-        attributes: ['given_name', 'family_name', 'birthdate'],
-        why: 'Reconfirmă identitatea asociată pașaportului tău UE înregistrat la ZenBank.',
-      },
-      {
-        credential: 'Adresă verificată',
-        vct: 'urn:banking40:sandbox:address:1',
-        attributes: ['address.formatted'],
-        why: 'Verifică dacă adresa de domiciliu s-a schimbat înainte de actualizarea ZenBank.',
-      },
-      {
-        credential: 'Sursă venit și angajator',
+        credential: 'Venit și angajator',
         vct: 'urn:banking40:sandbox:income:1',
-        attributes: ['income_type', 'payer.legal_name', 'monthly_income.periods (tranșă KYC)'],
-        why: 'Actualizează sursa fondurilor și angajatorul conform obligațiilor KYC (Legea 129/2019).',
+        attributes: ['Tipul venitului', 'Numele angajatorului', 'Interval de venit'],
+        why: 'Actualizează sursa de venit și angajatorul în profilul tău bancar, fără adeverință de salariu.',
       },
     ],
     excludedItems: [
-      'CNP (personal_numeric_code) și locul nașterii — ignorate de regulile ZenBank',
-      'Sumele lunare brute — ZenBank reține doar tranșa KYC agregată',
-      'Încărcarea de poze/PDF-uri după pașaport, facturi sau adeverință de venit',
+      'Nu stocăm CNP-ul și nici locul nașterii',
+      'Nu salvăm sumele exacte lunare — reținem doar intervalul de venit',
+      'Nu încarci poze cu actul de identitate, facturi sau adeverințe',
     ],
   };
 }
@@ -128,13 +206,17 @@ export class JourneyOrchestrator {
     const customer = createSeedCustomer(customerId, scenario);
     const introText =
       scenario === 'payment_restricted'
-        ? 'Bine ai revenit în ZenBank. Contul tău are momentan o restricție pe plățile efectuate din cauza unei actualizări incomplete de date. Întreabă „De ce nu pot face plăți?” sau alege o acțiune rapidă din stânga.'
-        : 'Bine ai venit în ZenBank. Profilul tău este înregistrat cu pașaport UE. Îți poți actualiza adresa, sursa de venit și reconfirmarea identității digital prin EUDI Wallet — fără să încarci documente.';
+        ? 'Bună! Observ că plățile din contul tău sunt momentan blocate. Întreabă-mă „De ce nu pot face plăți?” și verificăm imediat cum rezolvăm.'
+        : 'Bună! Sunt asistentul tău ZenBank. Întreabă-mă orice despre contul tău — de exemplu, „De ce nu pot face plăți?” sau „Cum îmi actualizez datele?”';
 
     return {
       sessionId,
       scenario,
       stage: 'IDLE',
+      flowChannel: null,
+      selectedScope: 'full',
+      selectedProfileCode: this.deps.profileCode,
+      activeFlowCard: null,
       language: 'ro',
       customer,
       messages: [
@@ -154,6 +236,7 @@ export class JourneyOrchestrator {
         customer,
         language: 'ro',
       }),
+      lastLlmMeta: null,
       auditLog: [
         {
           id: crypto.randomUUID(),
@@ -198,12 +281,14 @@ export class JourneyOrchestrator {
     role: 'user' | 'agent',
     text: string,
     card?: ChatCard,
+    accountCheck?: AccountStatusCheck,
   ): void {
     session.messages.push({
       id: crypto.randomUUID(),
       role,
       text,
       timestamp: nowIso(),
+      ...(accountCheck ? { accountCheck } : {}),
       ...(card ? { card } : {}),
     });
   }
@@ -235,6 +320,10 @@ export class JourneyOrchestrator {
       sessionId: s.sessionId,
       scenario: s.scenario,
       stage: s.stage,
+      flowChannel: s.flowChannel,
+      selectedScope: s.selectedScope,
+      selectedProfileCode: s.selectedProfileCode,
+      activeFlowCard: s.activeFlowCard,
       customer: {
         ...s.customer,
         currentAddress: { ...s.customer.currentAddress },
@@ -245,11 +334,13 @@ export class JourneyOrchestrator {
         ? {
             transactionId: s.activeVerification.transactionId,
             status: s.activeVerification.status,
+            sameDevice: s.activeVerification.sameDevice,
             expiresAt: s.activeVerification.expiresAt,
           }
         : null,
       lastTrustChecks: s.lastTrustChecks,
       lastZeroPiiContext: s.lastZeroPiiContext,
+      lastLlmMeta: s.lastLlmMeta,
       auditLog: s.auditLog,
       securityBadges: {
         llmPiiExposed: false,
@@ -263,6 +354,7 @@ export class JourneyOrchestrator {
     sessionId: string,
     message: string,
     quickAction?: 'START_DATA_UPDATE' | 'EXPLAIN_PAYMENT_RESTRICTION' | 'EXPLAIN_PRIVACY',
+    requestedScope?: VerificationScope,
   ): Promise<SessionPublicState> {
     const session = this.getSessionInternal(sessionId);
     const trimmed = message.trim();
@@ -272,9 +364,17 @@ export class JourneyOrchestrator {
 
     this.addMessage(session, 'user', trimmed);
 
+    const isPaymentInquiry =
+      quickAction === 'EXPLAIN_PAYMENT_RESTRICTION' ||
+      classifyDeterministicIntent(trimmed) === 'EXPLAIN_PAYMENT_RESTRICTION';
+    if (isPaymentInquiry) {
+      activatePaymentRestrictionIfUpdateNeeded(session.customer);
+    }
+
     const reply = await this.deps.assistant.respond({
       userMessage: trimmed,
       quickAction,
+      requestedScope,
       customer: session.customer,
       stage: session.stage,
       evaluation: session.lastEvaluation,
@@ -283,6 +383,11 @@ export class JourneyOrchestrator {
 
     session.language = reply.zeroPiiContext.language;
     session.lastZeroPiiContext = reply.zeroPiiContext;
+    session.lastLlmMeta = {
+      usedGemini: reply.usedGemini,
+      model: this.deps.assistant.getModel(),
+      ...(reply.fallbackReason ? { fallbackReason: reply.fallbackReason } : {}),
+    };
 
     if (reply.hadPiiInInput) {
       this.addAudit(
@@ -294,35 +399,72 @@ export class JourneyOrchestrator {
     }
 
     let card: ChatCard | undefined;
+    let accountCheck: AccountStatusCheck | undefined;
     if (reply.intent === 'START_DATA_UPDATE') {
+      const scope: VerificationScope = requestedScope ?? reply.requestedScope ?? 'full';
+      const profileCode = resolveProfileCode(scope, this.deps.profileCode);
+      session.flowChannel = 'chat';
+      session.selectedScope = scope;
+      session.selectedProfileCode = profileCode;
       session.stage = 'PRE_CONSENT';
-      card = buildPreConsentCard();
+      card = buildPreConsentCard(scope, profileCode);
+      session.activeFlowCard = card;
       this.addAudit(
         session,
         'AGENT',
         'PRE_CONSENT_PREPARED',
-        `Evaluat context ZenBank (document=${session.customer.documentType}, kyc=${session.customer.kycStatus}); pregătită cererea minimă PID + Adresă + Venit.`,
+        `Rutare dinamică profil EUDI (scope=${scope}, profile=${profileCode}, kyc=${session.customer.kycStatus}, usedGemini=${String(reply.usedGemini)}).`,
       );
     } else if (reply.intent === 'EXPLAIN_PAYMENT_RESTRICTION') {
-      if (session.customer.paymentRestricted) {
+      activatePaymentRestrictionIfUpdateNeeded(session.customer);
+      accountCheck = checkCustomerAccountStatus(session.customer);
+      this.addAudit(
+        session,
+        'ZENBANK_CORE',
+        'ACCOUNT_DATA_CHECKED',
+        `Verificat profil client ZenBank (dataUpdateRequired=${String(accountCheck.dataUpdateRequired)}, paymentRestricted=${String(accountCheck.paymentRestricted)}, missing=${accountCheck.missingItems.join(', ') || 'none'}).`,
+      );
+      if (accountCheck.dataUpdateRequired) {
+        const idNeeded = accountCheck.checks.find((c) => c.id === 'identity')?.status !== 'OK';
+        const addrNeeded = accountCheck.checks.find((c) => c.id === 'address')?.status !== 'OK';
+        const incNeeded = accountCheck.checks.find((c) => c.id === 'income')?.status !== 'OK';
+
+        const paymentScope: VerificationScope =
+          !idNeeded && !addrNeeded && incNeeded
+            ? 'income'
+            : addrNeeded && !incNeeded
+              ? 'address'
+              : 'full';
+        const profileCode = resolveProfileCode(paymentScope, this.deps.profileCode);
+
+        session.flowChannel = 'chat';
+        session.selectedScope = paymentScope;
+        session.selectedProfileCode = profileCode;
         session.stage = 'PRE_CONSENT';
-        card = buildPreConsentCard();
+        card = buildPreConsentCard(paymentScope, profileCode);
+        session.activeFlowCard = card;
         this.addAudit(
           session,
           'AGENT',
-          'RESTRICTION_DIAGNOSED',
-          'Identificată actualizare KYC incompletă care blochează plățile; client direcționat în același flux EUDI.',
+          accountCheck.paymentRestricted ? 'RESTRICTION_DIAGNOSED' : 'UPDATE_NEEDED_DIAGNOSED',
+          accountCheck.paymentRestricted
+            ? `Identificată actualizare incompletă care blochează plățile (usedGemini=${String(reply.usedGemini)}); inițiat flux EUDI (${profileCode}).`
+            : `Identificată necesitatea actualizării datelor personale la întrebarea din chat (usedGemini=${String(reply.usedGemini)}); inițiat flux EUDI (${profileCode}).`,
         );
       } else {
         this.addAudit(
           session,
           'AGENT',
           'RESTRICTION_CHECKED',
-          'Confirmat că plățile efectuate sunt active.',
+          `Confirmat că datele sunt la zi și plățile efectuate sunt active (usedGemini=${String(reply.usedGemini)}).`,
         );
       }
     } else if (reply.intent === 'CANCEL') {
       session.stage = 'IDLE';
+      session.flowChannel = null;
+      session.selectedScope = 'full';
+      session.selectedProfileCode = this.deps.profileCode;
+      session.activeFlowCard = null;
       session.activeVerification = null;
       session.pendingUpdate = null;
       this.addAudit(session, 'AGENT', 'FLOW_CANCELLED', 'Clientul a anulat pasul curent de actualizare.');
@@ -339,22 +481,87 @@ export class JourneyOrchestrator {
       stage: session.stage,
       customer: session.customer,
       evaluation: session.lastEvaluation,
+      selectedScope: session.selectedScope,
+      selectedProfileCode: session.selectedProfileCode,
       language: session.language,
     });
 
-    this.addMessage(session, 'agent', reply.reply, card);
+    this.addMessage(session, 'agent', reply.reply, card, accountCheck);
     return this.getPublicState(sessionId);
   }
 
-  async startVerification(sessionId: string): Promise<SessionPublicState> {
+  /**
+   * Starts a direct client-profile update flow without touching the support Chat stream.
+   */
+  startProfileUpdate(sessionId: string, scope: VerificationScope = 'full'): SessionPublicState {
     const session = this.getSessionInternal(sessionId);
-    const started = await this.deps.verifierClient.startVerification(this.deps.profileCode);
+    const profileCode = resolveProfileCode(scope, this.deps.profileCode);
+    const card = buildPreConsentCard(scope, profileCode);
+
+    session.flowChannel = 'profile';
+    session.selectedScope = scope;
+    session.selectedProfileCode = profileCode;
+    session.stage = 'PRE_CONSENT';
+    session.activeFlowCard = card;
+    session.activeVerification = null;
+    session.pendingUpdate = null;
+    session.lastZeroPiiContext = buildZeroPiiContext({
+      stage: session.stage,
+      customer: session.customer,
+      evaluation: session.lastEvaluation,
+      selectedScope: scope,
+      selectedProfileCode: profileCode,
+      language: session.language,
+    });
+
+    this.addAudit(
+      session,
+      'ZENBANK_CORE',
+      'PRE_CONSENT_PREPARED',
+      `Actualizare inițiată din pagina Datele mele (source=profile, scope=${scope}, profile=${profileCode}, kyc=${session.customer.kycStatus}).`,
+    );
+
+    return this.getPublicState(sessionId);
+  }
+
+  async startVerification(
+    sessionId: string,
+    launchMode: VerificationLaunchMode = 'cross_device',
+  ): Promise<SessionPublicState> {
+    const session = this.getSessionInternal(sessionId);
+    const scope = session.selectedScope ?? 'full';
+    const profileCode =
+      session.selectedProfileCode || resolveProfileCode(scope, this.deps.profileCode);
+
+    const returnUri =
+      launchMode === 'same_device_native'
+        ? this.deps.nativeReturnUri || 'ro.banking40.team04://same-device'
+        : launchMode === 'same_device_web' && this.deps.webReturnUri
+          ? this.deps.webReturnUri
+          : undefined;
+    const sameDevice = Boolean(returnUri);
+
+    const started = await this.deps.verifierClient.startVerification(profileCode, returnUri);
+
+    const card: ChatCard = {
+      type: 'wallet_qr',
+      transactionId: started.transactionId,
+      profileCode,
+      sameDevice,
+      qrSvg: started.qrSvg,
+      deepLink: started.deepLink,
+      expiresAt: started.expiresAt,
+      status: 'CREATED',
+    };
 
     session.stage = 'AWAITING_WALLET';
     session.pendingUpdate = null;
+    session.activeFlowCard = card;
     session.activeVerification = {
       transactionId: started.transactionId,
-      profileCode: this.deps.profileCode,
+      scope,
+      profileCode,
+      sameDevice,
       status: 'CREATED',
       expiresAt: started.expiresAt,
       deepLink: started.deepLink,
@@ -364,6 +571,8 @@ export class JourneyOrchestrator {
     session.lastZeroPiiContext = buildZeroPiiContext({
       stage: session.stage,
       customer: session.customer,
+      selectedScope: scope,
+      selectedProfileCode: profileCode,
       language: session.language,
     });
 
@@ -371,21 +580,18 @@ export class JourneyOrchestrator {
       session,
       'VERIFIER',
       'VERIFICATION_STARTED',
-      `Creată verificare cross-device pentru profilul=${this.deps.profileCode}.`,
+      `Creată verificare EUDI (${scope}, mode=${sameDevice ? launchMode : 'cross_device'}) pentru profilul=${profileCode}.`,
     );
 
-    const text =
-      'Scanează codul QR cu EUDI Wallet (sau deschide link-ul în emulator) și aprobă partajarea pentru PID, Adresă și Atestarea de venit.';
-
-    this.addMessage(session, 'agent', text, {
-      type: 'wallet_qr',
-      transactionId: started.transactionId,
-      profileCode: this.deps.profileCode,
-      qrSvg: started.qrSvg,
-      deepLink: started.deepLink,
-      expiresAt: started.expiresAt,
-      status: 'CREATED',
-    });
+    if (session.flowChannel !== 'profile') {
+      const text =
+        scope === 'address'
+          ? 'Scanează codul QR de mai jos cu aplicația EUDI Wallet (sau apasă Deschide în EUDI Wallet) și aprobă partajarea atestării de adresă.'
+          : scope === 'income'
+            ? 'Scanează codul QR de mai jos cu aplicația EUDI Wallet (sau apasă Deschide în EUDI Wallet) și aprobă partajarea atestării de venit.'
+            : 'Scanează codul QR de mai jos cu aplicația EUDI Wallet și aprobă partajarea datelor tale de identitate, adresă și venit.';
+      this.addMessage(session, 'agent', text, card);
+    }
 
     return this.getPublicState(sessionId);
   }
@@ -419,8 +625,13 @@ export class JourneyOrchestrator {
 
     const statusResp = await this.deps.verifierClient.getVerificationStatus(transactionId);
     session.activeVerification.status = statusResp.status;
+    this.syncWalletQrStatus(session, transactionId, statusResp.status);
 
-    if (statusResp.status === 'CREATED' || statusResp.status === 'REQUEST_RETRIEVED') {
+    if (
+      statusResp.status === 'CREATED' ||
+      statusResp.status === 'REQUEST_RETRIEVED' ||
+      statusResp.status === 'RESPONSE_CODE_REQUIRED'
+    ) {
       return this.getPublicState(sessionId);
     }
 
@@ -437,13 +648,132 @@ export class JourneyOrchestrator {
       return this.getPublicState(sessionId);
     }
 
-    const fetched = await this.deps.verifierClient.fetchSealedResult(transactionId);
-    if (fetched.kind === 'not_ready') {
+    return await this.fetchVerifyAndApplyResult(session, transactionId);
+  }
+
+  private syncWalletQrStatus(
+    session: SessionInternal,
+    transactionId: string,
+    status: string,
+  ): void {
+    if (
+      session.activeFlowCard?.type === 'wallet_qr' &&
+      session.activeFlowCard.transactionId === transactionId
+    ) {
+      session.activeFlowCard.status = status;
+    }
+    for (const msg of session.messages) {
+      if (msg.card?.type === 'wallet_qr' && msg.card.transactionId === transactionId) {
+        msg.card.status = status;
+      }
+    }
+  }
+
+  private async sleep(ms: number): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private async claimWithRetry(transactionId: string, responseCode: string) {
+    const maxAttempts = 3;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        return await this.deps.verifierClient.claimVerification(transactionId, responseCode);
+      } catch (err) {
+        const isTransientNotReady =
+          err instanceof VerifierHttpError &&
+          err.statusCode === 409 &&
+          err.code === 'RESULT_NOT_READY';
+        if (!isTransientNotReady || attempt >= maxAttempts) {
+          throw err;
+        }
+        await this.sleep(750);
+      }
+    }
+    throw new VerifierHttpError(
+      409,
+      'RESULT_NOT_READY',
+      'Rezultatul EUDI nu este încă pregătit.',
+    );
+  }
+
+  /**
+   * Claims a same-device verification using the one-time response_code returned from EUDI Wallet,
+   * sharing the inFlightPolls lock so concurrent 2s polls never race into JTI_REPLAY or RESULT_GONE.
+   */
+  async claimVerification(
+    sessionId: string,
+    responseCode: string,
+    transactionId?: string,
+  ): Promise<SessionPublicState> {
+    const session = this.getSessionInternal(sessionId);
+    const txId = transactionId || session.activeVerification?.transactionId;
+    if (!txId) {
+      throw new VerifierHttpError(
+        409,
+        'NO_ACTIVE_VERIFICATION',
+        'Nu există o verificare EUDI activă pentru confirmare.',
+      );
+    }
+
+    const lockKey = `${sessionId}:${txId}`;
+    const existing = this.inFlightPolls.get(lockKey);
+    if (existing) {
+      await existing.catch(() => undefined);
+    }
+
+    if (!session.activeVerification || session.activeVerification.transactionId !== txId) {
       return this.getPublicState(sessionId);
+    }
+
+    const promise = (async () => {
+      const claimed = await this.claimWithRetry(txId, responseCode);
+      if (session.activeVerification) {
+        session.activeVerification.status = claimed.status;
+      }
+      this.syncWalletQrStatus(session, txId, claimed.status);
+
+      if (
+        claimed.status === 'DECLINED' ||
+        claimed.status === 'WALLET_ERROR' ||
+        claimed.status === 'EXPIRED'
+      ) {
+        this.handleTerminalErrorStatus(
+          session,
+          claimed.status,
+          claimed.reason ?? claimed.walletError ?? undefined,
+        );
+        return this.getPublicState(sessionId);
+      }
+
+      return await this.fetchVerifyAndApplyResult(session, txId, true);
+    })().finally(() => {
+      this.inFlightPolls.delete(lockKey);
+    });
+
+    this.inFlightPolls.set(lockKey, promise);
+    return promise;
+  }
+
+  private async fetchVerifyAndApplyResult(
+    session: SessionInternal,
+    transactionId: string,
+    retryOnNotReady = false,
+  ): Promise<SessionPublicState> {
+    if (!session.activeVerification || session.activeVerification.transactionId !== transactionId) {
+      return this.getPublicState(session.sessionId);
+    }
+
+    let fetched = await this.deps.verifierClient.fetchSealedResult(transactionId);
+    if (fetched.kind === 'not_ready' && retryOnNotReady) {
+      await this.sleep(750);
+      fetched = await this.deps.verifierClient.fetchSealedResult(transactionId);
+    }
+    if (fetched.kind === 'not_ready') {
+      return this.getPublicState(session.sessionId);
     }
     if (fetched.kind === 'gone' || fetched.kind === 'not_sealed') {
       this.handleTerminalErrorStatus(session, fetched.code, fetched.message);
-      return this.getPublicState(sessionId);
+      return this.getPublicState(session.sessionId);
     }
 
     if (!this.deps.privateKeyPem) {
@@ -462,7 +792,7 @@ export class JourneyOrchestrator {
           ],
         ),
       );
-      return this.getPublicState(sessionId);
+      return this.getPublicState(session.sessionId);
     }
 
     let cryptoResult;
@@ -482,7 +812,7 @@ export class JourneyOrchestrator {
           ? err
           : new VerificationCryptoError('CRYPTO_ERROR', 'Validarea criptografică a rezultatului a eșuat.', []);
       this.handleCryptoFailure(session, cryptoErr);
-      return this.getPublicState(sessionId);
+      return this.getPublicState(session.sessionId);
     }
 
     let acknowledged = false;
@@ -492,15 +822,19 @@ export class JourneyOrchestrator {
       acknowledged = false;
     }
 
+    const txScope = session.activeVerification.scope;
+    const txProfileCode = session.activeVerification.profileCode;
+
     const evaluation = evaluateVerificationResult({
       customer: session.customer,
       payload: cryptoResult.payload,
       cryptoChecks: cryptoResult.checks,
       acknowledged,
+      requestedScope: txScope,
     });
 
-    this.applyEvaluationToSession(session, transactionId, evaluation, false);
-    return this.getPublicState(sessionId);
+    this.applyEvaluationToSession(session, transactionId, evaluation, false, txScope, txProfileCode);
+    return this.getPublicState(session.sessionId);
   }
 
   private applyEvaluationToSession(
@@ -508,6 +842,8 @@ export class JourneyOrchestrator {
     transactionId: string,
     evaluation: BankRuleEvaluation,
     simulated: boolean,
+    scope: VerificationScope = session.selectedScope ?? 'full',
+    profileCode: string = session.selectedProfileCode || resolveProfileCode(scope, this.deps.profileCode),
   ): void {
     session.activeVerification = null;
     session.lastEvaluation = evaluation;
@@ -522,6 +858,8 @@ export class JourneyOrchestrator {
       session.pendingUpdate = {
         id: pendingId,
         transactionId,
+        scope,
+        profileCode,
         verifiedAddress: evaluation.verifiedAddress,
         verifiedIncome: evaluation.verifiedIncome,
         canUpdateAddress: evaluation.canConfirmAddressUpdate,
@@ -534,14 +872,14 @@ export class JourneyOrchestrator {
         session,
         simulated ? 'SIMULATION' : 'RULES',
         `EVALUATION_${evaluation.decision}`,
-        `Identitate confirmată cu clientul ZenBank; decizie=${evaluation.decision}; se așteaptă confirmarea explicită.`,
+        `Rezultat EUDI evaluat (scope=${scope}, profile=${profileCode}); decizie=${evaluation.decision}; se așteaptă confirmarea explicită.`,
       );
 
       if (evaluation.decision === 'PARTIAL_IDENTITY_ONLY') {
         const card: ChatCard = {
           type: 'recovery',
           code: evaluation.reasonCode,
-          title: 'Identitate verificată · Date suplimentare nepartajate',
+          title: 'Identitate confirmată · Unele date nu au fost partajate',
           detail: evaluation.message,
           simulated,
           canRetryEudi: true,
@@ -549,10 +887,13 @@ export class JourneyOrchestrator {
           pendingUpdateId: pendingId,
           fallbackOptions: [
             'Confirmă doar reconfirmarea identității (păstrează datele curente din ZenBank)',
-            'Reîncearcă în EUDI Wallet și aprobă partajarea adresei și venitului',
+            'Reîncearcă în EUDI Wallet și aprobă partajarea datelor solicitate',
           ],
         };
-        this.addMessage(session, 'agent', evaluation.message, card);
+        session.activeFlowCard = card;
+        if (session.flowChannel !== 'profile') {
+          this.addMessage(session, 'agent', evaluation.message, card);
+        }
       } else {
         const hasAnyUpdate =
           Boolean(evaluation.addressDiff?.hasChanges) || Boolean(evaluation.incomeDiff?.hasChanges);
@@ -561,17 +902,17 @@ export class JourneyOrchestrator {
           : evaluation.message;
 
         const revocationNote =
-          evaluation.revocationStatus === 'VALID'
-            ? 'Status revocare: VALID.'
-            : `Status revocare: ${evaluation.revocationStatus} (sandbox) — actualizarea instantanee este permisă doar pentru adresa și sursa de venit a aceleiași persoane.`;
+          'Profilul tău nu se modifică până când nu apeși confirmarea. Poți verifica fiecare schimbare înainte de salvare.';
 
         const card: ChatCard = {
           type: 'diff_confirm',
           pendingUpdateId: pendingId,
-          identityMatched: true,
+          scope,
+          profileCode,
+          identityMatched: Boolean(evaluation.verifiedIdentity),
           identityName: evaluation.verifiedIdentity
             ? `${evaluation.verifiedIdentity.givenName} ${evaluation.verifiedIdentity.familyName}`
-            : `${session.customer.givenName} ${session.customer.familyName} (atestare PID verificată)`,
+            : `${session.customer.givenName} ${session.customer.familyName}`,
           identityBirthdate:
             evaluation.verifiedIdentity?.birthdate ?? session.customer.birthdate,
           currentAddress: { ...session.customer.currentAddress },
@@ -586,7 +927,10 @@ export class JourneyOrchestrator {
           canConfirmIdentityOnly: evaluation.canConfirmIdentityOnly,
           revocationNote,
         };
-        this.addMessage(session, 'agent', promptText, card);
+        session.activeFlowCard = card;
+        if (session.flowChannel !== 'profile') {
+          this.addMessage(session, 'agent', promptText, card);
+        }
       }
     } else if (evaluation.decision === 'SECURITY_BLOCKED') {
       session.pendingUpdate = null;
@@ -597,19 +941,23 @@ export class JourneyOrchestrator {
         'SECURITY_BLOCKED',
         `Modificare profil blocată: ${evaluation.reasonCode}.`,
       );
-      this.addMessage(session, 'agent', evaluation.message, {
+      const card: ChatCard = {
         type: 'recovery',
         code: evaluation.reasonCode,
-        title: 'Blocaj de securitate — Neconcordanță identitate',
+        title: 'Nu putem aplica această actualizare',
         detail: evaluation.message,
         simulated,
         canRetryEudi: true,
         canConfirmIdentityOnly: false,
         fallbackOptions: [
           'Autentifică-te în contul ZenBank corespunzător sau folosește propriul EUDI Wallet',
-          'Continuă printr-o sucursală ZenBank cu verificarea fizică a pașaportului',
+          'Continuă printr-o sucursală ZenBank cu verificarea actului de identitate',
         ],
-      });
+      };
+      session.activeFlowCard = card;
+      if (session.flowChannel !== 'profile') {
+        this.addMessage(session, 'agent', evaluation.message, card);
+      }
     } else {
       session.pendingUpdate = null;
       session.stage = 'DECLINED';
@@ -619,25 +967,31 @@ export class JourneyOrchestrator {
         `UNHAPPY_${evaluation.reasonCode}`,
         evaluation.message,
       );
-      this.addMessage(session, 'agent', evaluation.message, {
+      const card: ChatCard = {
         type: 'recovery',
         code: evaluation.reasonCode,
-        title: 'Verificare nefinalizată',
+        title: 'Verificarea nu a fost finalizată',
         detail: evaluation.message,
         simulated,
         canRetryEudi: true,
         canConfirmIdentityOnly: false,
         fallbackOptions: [
           'Reîncearcă verificarea cu EUDI Wallet',
-          'Încarcă pașaportul, dovada adresei și adeverința de venit sau programează o vizită în sucursală',
+          'Încarcă actul de identitate, dovada adresei și adeverința de venit sau programează o vizită în sucursală',
         ],
-      });
+      };
+      session.activeFlowCard = card;
+      if (session.flowChannel !== 'profile') {
+        this.addMessage(session, 'agent', evaluation.message, card);
+      }
     }
 
     session.lastZeroPiiContext = buildZeroPiiContext({
       stage: session.stage,
       customer: session.customer,
       evaluation,
+      selectedScope: scope,
+      selectedProfileCode: profileCode,
       language: session.language,
     });
   }
@@ -655,26 +1009,26 @@ export class JourneyOrchestrator {
       DECLINED: {
         title: 'Partajare refuzată în wallet',
         detail:
-          'Ai refuzat partajarea datelor în EUDI Wallet. Profilul tău ZenBank nu a fost modificat.',
+          'Ai ales să nu partajezi datele în EUDI Wallet. Profilul tău ZenBank nu a fost modificat.',
       },
       EXPIRED: {
         title: 'Cererea de verificare a expirat',
         detail:
-          'Cererea de verificare de 5 minute a expirat înainte de aprobare. Poți porni oricând o verificare nouă.',
+          'Timpul de 5 minute pentru aprobare a expirat. Poți porni oricând o verificare nouă.',
       },
       WALLET_ERROR: {
-        title: 'Eroare prezentare în wallet',
+        title: 'Eroare în aplicația EUDI Wallet',
         detail:
           reason ||
-          'Wallet-ul a întâmpinat o eroare la generarea prezentării. Poți reîncerca sau folosi fluxul standard cu documente.',
+          'Aplicația wallet a întâmpinat o eroare temporară. Poți reîncerca sau folosi opțiunea clasică cu documente.',
       },
       RESULT_GONE: {
-        title: 'Rezultat verificare expirat',
-        detail: 'Rezultatul verificării a fost deja preluat sau a expirat pe serverul de verificare.',
+        title: 'Sesiune de verificare expirată',
+        detail: 'Această cerere a fost deja procesată sau a expirat. Te rugăm să pornești o verificare nouă.',
       },
       RESULT_NOT_SEALED: {
-        title: 'Rezultat nesigilat de la Verifier',
-        detail: 'Profilul de verificare nu a returnat un răspuns DISCLOSURE sigilat.',
+        title: 'Răspuns incomplet de la EUDI Wallet',
+        detail: 'Nu am primit un răspuns complet din EUDI Wallet. Te rugăm să încerci din nou.',
       },
     };
 
@@ -699,8 +1053,7 @@ export class JourneyOrchestrator {
       language: session.language,
     });
 
-    this.addAudit(session, 'VERIFIER', `STATUS_${statusCode}`, info.detail);
-    this.addMessage(session, 'agent', info.detail, {
+    const card: ChatCard = {
       type: 'recovery',
       code: statusCode,
       title: info.title,
@@ -710,9 +1063,15 @@ export class JourneyOrchestrator {
       canConfirmIdentityOnly: false,
       fallbackOptions: [
         'Reîncearcă verificarea cu EUDI Wallet',
-        'Continuă cu încărcarea manuală a pașaportului, dovezii de adresă și adeverinței de venit',
+        'Continuă cu încărcarea manuală a actului de identitate, dovezii de adresă și adeverinței de venit',
       ],
-    });
+    };
+    session.activeFlowCard = card;
+
+    this.addAudit(session, 'VERIFIER', `STATUS_${statusCode}`, info.detail);
+    if (session.flowChannel !== 'profile') {
+      this.addMessage(session, 'agent', info.detail, card);
+    }
   }
 
   private handleCryptoFailure(session: SessionInternal, err: VerificationCryptoError): void {
@@ -727,25 +1086,30 @@ export class JourneyOrchestrator {
       language: session.language,
     });
 
+    const card: ChatCard = {
+      type: 'recovery',
+      code: err.code,
+      title: 'Verificarea de securitate nu a reușit',
+      detail: err.message,
+      simulated: false,
+      canRetryEudi: true,
+      canConfirmIdentityOnly: false,
+      fallbackOptions: [
+        'Pornește o nouă verificare prin EUDI Wallet',
+        'Continuă printr-o sucursală ZenBank cu actul de identitate',
+      ],
+    };
+    session.activeFlowCard = card;
+
     this.addAudit(session, 'CRYPTO', `CRYPTO_REJECTED_${err.code}`, err.message);
-    this.addMessage(
-      session,
-      'agent',
-      'ZenBank nu a putut valida criptografic răspunsul de verificare, astfel încât profilul tău nu a fost modificat.',
-      {
-        type: 'recovery',
-        code: err.code,
-        title: 'Validare criptografică eșuată',
-        detail: err.message,
-        simulated: false,
-        canRetryEudi: true,
-        canConfirmIdentityOnly: false,
-        fallbackOptions: [
-          'Pornește o nouă sesiune de verificare EUDI',
-          'Folosește verificarea standard în sucursală ZenBank',
-        ],
-      },
-    );
+    if (session.flowChannel !== 'profile') {
+      this.addMessage(
+        session,
+        'agent',
+        'Nu am putut confirma siguranța răspunsului primit, așa că profilul tău nu a fost modificat.',
+        card,
+      );
+    }
   }
 
   confirmUpdate(
@@ -782,6 +1146,9 @@ export class JourneyOrchestrator {
       );
     }
 
+    const pendingScope = pending.scope;
+    const pendingProfileCode = pending.profileCode;
+
     const updateAddress =
       (opts.mode === 'UPDATE_PROFILE' || opts.mode === 'UPDATE_ADDRESS') &&
       pending.canUpdateAddress;
@@ -792,6 +1159,8 @@ export class JourneyOrchestrator {
       verifiedAddress: pending.verifiedAddress,
       updateIncome,
       verifiedIncome: pending.verifiedIncome,
+      scope: pendingScope,
+      identityVerified: pending.canConfirmIdentityOnly,
     });
 
     session.pendingUpdate = null;
@@ -800,8 +1169,25 @@ export class JourneyOrchestrator {
       stage: session.stage,
       customer: session.customer,
       evaluation: session.lastEvaluation,
+      selectedScope: pendingScope,
+      selectedProfileCode: pendingProfileCode,
       language: session.language,
     });
+
+    const card: ChatCard = {
+      type: 'completed',
+      scope: pendingScope,
+      profileCode: pendingProfileCode,
+      identityReconfirmed: receipt.identityReconfirmed,
+      addressUpdated: receipt.addressUpdated,
+      incomeUpdated: receipt.incomeUpdated,
+      restrictionLifted: receipt.restrictionLifted,
+      noDocumentUploadRequired: receipt.noDocumentUploadRequired,
+      updatedAddress: receipt.updatedAddress,
+      updatedIncome: receipt.updatedIncome,
+      completedAt: receipt.completedAt,
+    };
+    session.activeFlowCard = card;
 
     this.addAudit(
       session,
@@ -810,17 +1196,9 @@ export class JourneyOrchestrator {
       `Actualizare ZenBank aplicată după confirmare (identityReconfirmed=${receipt.identityReconfirmed}, addressUpdated=${receipt.addressUpdated}, incomeUpdated=${receipt.incomeUpdated}, restrictionLifted=${receipt.restrictionLifted}).`,
     );
 
-    this.addMessage(session, 'agent', 'Datele tale ZenBank sunt acum actualizate.', {
-      type: 'completed',
-      identityReconfirmed: receipt.identityReconfirmed,
-      addressUpdated: receipt.addressUpdated,
-      incomeUpdated: receipt.incomeUpdated,
-      restrictionLifted: receipt.restrictionLifted,
-      noPassportUploadRequired: receipt.noPassportUploadRequired,
-      updatedAddress: receipt.updatedAddress,
-      updatedIncome: receipt.updatedIncome,
-      completedAt: receipt.completedAt,
-    });
+    if (session.flowChannel !== 'profile') {
+      this.addMessage(session, 'agent', 'Datele tale ZenBank sunt acum actualizate.', card);
+    }
 
     return this.getPublicState(sessionId);
   }
@@ -902,8 +1280,12 @@ export class JourneyOrchestrator {
     }
 
     this.handleTerminalErrorStatus(session, kind);
+    if (session.activeFlowCard?.type === 'recovery') {
+      session.activeFlowCard.simulated = true;
+      session.activeFlowCard.title = `[Simulare Demo] ${session.activeFlowCard.title}`;
+    }
     const lastMsg = session.messages[session.messages.length - 1];
-    if (lastMsg?.card?.type === 'recovery') {
+    if (session.flowChannel !== 'profile' && lastMsg?.card?.type === 'recovery' && !lastMsg.card.simulated) {
       lastMsg.card.simulated = true;
       lastMsg.card.title = `[Simulare Demo] ${lastMsg.card.title}`;
     }

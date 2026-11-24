@@ -5,7 +5,7 @@ import { createApp } from './server.js';
 const config = loadConfig();
 const { app } = await createApp(config);
 
-app.listen(config.port, () => {
+const server = app.listen(config.port, () => {
   safeLog('info', 'ZenBank EUDI backend listening', {
     port: config.port,
     verifierMode: config.verifierMode,
@@ -14,3 +14,7 @@ app.listen(config.port, () => {
     geminiConfigured: Boolean(config.geminiApiKey),
   });
 });
+
+server.requestTimeout = 300_000;
+server.keepAliveTimeout = 65_000;
+server.headersTimeout = 66_000;

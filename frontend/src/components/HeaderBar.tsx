@@ -1,97 +1,148 @@
-import { RotateCcw, ShieldCheck } from 'lucide-react';
-import type { CustomerId, DemoScenario, TrustCheckItem } from '../types';
+import { useEffect, useState } from 'react';
+import { Check, Moon, RotateCcw, SlidersHorizontal, Sun, X } from 'lucide-react';
+import type { CustomerId } from '../types';
+
+export type MobileTab = 'home' | 'chat';
 
 interface HeaderBarProps {
   customerId: CustomerId;
-  scenario: DemoScenario;
-  trustChecks: TrustCheckItem[];
-  verifierMode?: 'live' | 'mock';
-  profileCode?: string;
+  activeTab: MobileTab;
+  theme: 'dark' | 'light';
   loading: boolean;
-  onSwitchScenario: (customerId: CustomerId, scenario: DemoScenario) => void;
+  onToggleTheme: () => void;
+  onSwitchCustomer: (customerId: CustomerId) => void;
   onReset: () => void;
-  onOpenInspector: () => void;
 }
+
+const CUSTOMER_OPTIONS: Array<{ id: CustomerId; name: string; subtitle: string }> = [
+  { id: 'radu', name: 'Radu Stan', subtitle: 'Client principal · Wallet live' },
+  { id: 'alex', name: 'Alex Popescu', subtitle: 'Profil alternativ' },
+  { id: 'maria', name: 'Maria Ionescu', subtitle: 'Test identitate diferită' },
+];
 
 export function HeaderBar({
   customerId,
-  scenario,
-  trustChecks,
-  verifierMode,
-  profileCode,
+  activeTab,
+  theme,
   loading,
-  onSwitchScenario,
+  onToggleTheme,
+  onSwitchCustomer,
   onReset,
-  onOpenInspector,
 }: HeaderBarProps) {
-  const passCount = trustChecks.filter((c) => c.status === 'PASS').length;
-  const failCount = trustChecks.filter((c) => c.status === 'FAIL').length;
+  const [sheetOpen, setSheetOpen] = useState(false);
+
+  useEffect(() => {
+    if (!sheetOpen) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setSheetOpen(false);
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [sheetOpen]);
+
+  const subtitle = activeTab === 'home' ? 'Datele mele' : 'Chat suport ZenBank';
 
   return (
-    <header className="topbar">
-      <div className="brand">
-        <span className="brand-mark">ZB</span>
-        <div>
-          <h1 className="brand-title">ZenBank · Actualizare date EUDI</h1>
-          <div className="brand-sub">
-            Același ZenBank. Aceeași nevoie. Aceeași experiență digitală — indiferent de documentul de
-            identitate
-            {verifierMode ? ` · ${verifierMode.toUpperCase()} (${profileCode})` : ''}
+    <>
+      <header className="mobile-header">
+        <div className="brand">
+          <span className="brand-mark">ZB</span>
+          <div>
+            <h1 className="brand-title">ZenBank</h1>
+            <div className="brand-sub">{subtitle}</div>
           </div>
         </div>
-      </div>
 
-      <div className="topbar-controls">
-        <label className="select-pill">
-          <span>Client:</span>
-          <select
-            value={customerId}
-            disabled={loading}
-            onChange={(e) => onSwitchScenario(e.target.value as CustomerId, scenario)}
+        <div className="header-actions">
+          <button
+            type="button"
+            className="icon-circle-btn"
+            aria-label={theme === 'dark' ? 'Comută la modul luminos' : 'Comută la modul întunecat'}
+            title={theme === 'dark' ? 'Mod luminos' : 'Mod întunecat'}
+            onClick={onToggleTheme}
           >
-            <option value="radu">Radu Stan (Pașaport UE · Wallet live)</option>
-            <option value="alex">Alex Popescu (Profil Starter Pack)</option>
-            <option value="maria">Maria Ionescu (Test neconcordanță)</option>
-          </select>
-        </label>
+            {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
+          </button>
 
-        <label className="select-pill">
-          <span>Scenariu:</span>
-          <select
-            value={scenario}
+          <button
+            type="button"
+            className="demo-trigger-pill"
+            aria-expanded={sheetOpen}
+            aria-haspopup="dialog"
             disabled={loading}
-            onChange={(e) => onSwitchScenario(customerId, e.target.value as DemoScenario)}
+            onClick={() => setSheetOpen(true)}
           >
-            <option value="data_update">Actualizare date (Flux principal)</option>
-            <option value="payment_restricted">Plăți restricționate (Demo chat)</option>
-          </select>
-        </label>
+            <SlidersHorizontal size={13} />
+            <span>Demo</span>
+          </button>
+        </div>
+      </header>
 
-        <button
-          type="button"
-          className="btn btn-secondary btn-sm"
-          disabled={loading}
-          onClick={onReset}
-          title="Resetează profilul clientului și conversația"
-        >
-          <RotateCcw size={14} />
-          Resetează demo
-        </button>
+      {sheetOpen && (
+        <div className="sheet-backdrop" onClick={() => setSheetOpen(false)}>
+          <section
+            className="bottom-sheet"
+            role="dialog"
+            aria-label="Configurare scenarii demo"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="sheet-handle" aria-hidden="true" />
+            <div className="sheet-header">
+              <strong>Configurare demonstrație</strong>
+              <button
+                type="button"
+                className="sheet-close-btn"
+                aria-label="Închide"
+                onClick={() => setSheetOpen(false)}
+              >
+                <X size={16} />
+              </button>
+            </div>
 
-        <button
-          type="button"
-          className="btn btn-secondary btn-sm"
-          onClick={onOpenInspector}
-        >
-          <ShieldCheck size={14} color={failCount > 0 ? '#c62828' : '#147a43'} />
-          Verificare &amp; Audit
-          {trustChecks.length > 0 && (
-            <span className={`badge ${failCount > 0 ? 'badge-red' : 'badge-green'}`}>
-              {passCount}/{trustChecks.length}
-            </span>
-          )}
-        </button>
-      </div>
-    </header>
+            <div className="sheet-section">
+              <div className="sheet-label">Client autentificat</div>
+              <div className="sheet-option-list">
+                {CUSTOMER_OPTIONS.map((opt) => {
+                  const selected = customerId === opt.id;
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      className={`sheet-option-btn ${selected ? 'selected' : ''}`}
+                      disabled={loading}
+                      onClick={() => {
+                        onSwitchCustomer(opt.id);
+                        setSheetOpen(false);
+                      }}
+                    >
+                      <div>
+                        <div className="sheet-option-title">{opt.name}</div>
+                        <div className="sheet-option-sub">{opt.subtitle}</div>
+                      </div>
+                      {selected && <Check size={16} color="var(--zen-primary)" />}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <button
+              type="button"
+              className="btn btn-secondary btn-block"
+              disabled={loading}
+              onClick={() => {
+                setSheetOpen(false);
+                onReset();
+              }}
+            >
+              <RotateCcw size={15} />
+              Resetează conversația
+            </button>
+          </section>
+        </div>
+      )}
+    </>
   );
 }

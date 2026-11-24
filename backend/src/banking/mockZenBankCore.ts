@@ -1,8 +1,11 @@
 import type {
+  AccountCheckItem,
+  AccountStatusCheck,
   CustomerId,
   DemoScenario,
   KycIncomeProfile,
   StructuredAddress,
+  VerificationScope,
   ZenBankCustomerProfile,
 } from '../types.js';
 
@@ -37,7 +40,7 @@ const MARIA_INCOME: KycIncomeProfile = {
 };
 
 const PAYMENT_RESTRICTION_REASON =
-  'Actualizarea datelor clientului este incompletă — este necesară reconfirmarea identității pentru pașaportul înregistrat pentru ridicarea restricției pe plăți.';
+  'Actualizarea datelor personale este incompletă — este necesară reconfirmarea identității pentru ridicarea restricției pe plăți.';
 
 /**
  * Creates a fresh deep-cloned ZenBank customer record for a demo session and scenario.
@@ -56,8 +59,8 @@ export function createSeedCustomer(
       givenName: 'MARIA',
       familyName: 'IONESCU',
       birthdate: '1988-03-10',
-      citizenshipLabel: 'Cetățean UE · Identificat cu pașaport',
-      documentType: 'EU_PASSPORT',
+      citizenshipLabel: 'Cetățean UE',
+      documentType: 'IDENTITY_DOCUMENT',
       documentNumberMasked: 'EU••••7319',
       currentAddress: { ...MARIA_ADDRESS },
       currentIncome: { ...MARIA_INCOME },
@@ -65,6 +68,8 @@ export function createSeedCustomer(
       paymentRestricted,
       restrictionReason,
       lastReconfirmedAt: null,
+      addressVerified: false,
+      incomeVerified: false,
     };
   }
 
@@ -74,8 +79,8 @@ export function createSeedCustomer(
       givenName: 'ALEX',
       familyName: 'POPESCU',
       birthdate: '1990-05-15',
-      citizenshipLabel: 'Cetățean UE · Identificat cu pașaport',
-      documentType: 'EU_PASSPORT',
+      citizenshipLabel: 'Cetățean UE',
+      documentType: 'IDENTITY_DOCUMENT',
       documentNumberMasked: 'EU••••5190',
       currentAddress: { ...ADDRESS_A },
       currentIncome: { ...DEFAULT_INCOME },
@@ -83,6 +88,8 @@ export function createSeedCustomer(
       paymentRestricted,
       restrictionReason,
       lastReconfirmedAt: null,
+      addressVerified: false,
+      incomeVerified: false,
     };
   }
 
@@ -91,8 +98,8 @@ export function createSeedCustomer(
     givenName: 'RADU',
     familyName: 'STAN',
     birthdate: '1986-06-08',
-    citizenshipLabel: 'Cetățean UE · Identificat cu pașaport',
-    documentType: 'EU_PASSPORT',
+    citizenshipLabel: 'Cetățean UE',
+    documentType: 'IDENTITY_DOCUMENT',
     documentNumberMasked: 'EU••••4821',
     currentAddress: { ...ADDRESS_A },
     currentIncome: { ...DEFAULT_INCOME },
@@ -100,6 +107,8 @@ export function createSeedCustomer(
     paymentRestricted,
     restrictionReason,
     lastReconfirmedAt: null,
+    addressVerified: false,
+    incomeVerified: false,
   };
 }
 
@@ -108,7 +117,7 @@ export interface ProfileUpdateReceipt {
   addressUpdated: boolean;
   incomeUpdated: boolean;
   restrictionLifted: boolean;
-  noPassportUploadRequired: true;
+  noDocumentUploadRequired: true;
   updatedAddress: StructuredAddress;
   updatedIncome: KycIncomeProfile;
   completedAt: string;
@@ -125,34 +134,138 @@ export function applyZenBankProfileUpdate(
     verifiedAddress: StructuredAddress | null;
     updateIncome: boolean;
     verifiedIncome: KycIncomeProfile | null;
+    scope?: VerificationScope;
+    identityVerified?: boolean;
   },
 ): ProfileUpdateReceipt {
   const completedAt = new Date().toISOString();
   const wasRestricted = customer.paymentRestricted;
+  const identityReconfirmed = opts.identityVerified ?? (!opts.scope || opts.scope === 'full');
 
   const addressUpdated = Boolean(opts.updateAddress && opts.verifiedAddress);
   if (addressUpdated && opts.verifiedAddress) {
     customer.currentAddress = { ...opts.verifiedAddress };
+    customer.addressVerified = true;
   }
 
   const incomeUpdated = Boolean(opts.updateIncome && opts.verifiedIncome);
   if (incomeUpdated && opts.verifiedIncome) {
     customer.currentIncome = { ...opts.verifiedIncome };
+    customer.incomeVerified = true;
   }
 
-  customer.kycStatus = 'UP_TO_DATE';
-  customer.paymentRestricted = false;
-  customer.restrictionReason = null;
-  customer.lastReconfirmedAt = completedAt;
+  if (identityReconfirmed) {
+    customer.lastReconfirmedAt = completedAt;
+  }
+
+  const isFullScope = !opts.scope || opts.scope === 'full';
+  const allPartialComplete =
+    Boolean(customer.addressVerified) && Boolean(customer.incomeVerified);
+
+  if (isFullScope || allPartialComplete) {
+    customer.kycStatus = 'UP_TO_DATE';
+    customer.paymentRestricted = false;
+    customer.restrictionReason = null;
+  }
 
   return {
-    identityReconfirmed: true,
+    identityReconfirmed,
     addressUpdated,
     incomeUpdated,
-    restrictionLifted: wasRestricted,
-    noPassportUploadRequired: true,
+    restrictionLifted: wasRestricted && !customer.paymentRestricted,
+    noDocumentUploadRequired: true,
     updatedAddress: { ...customer.currentAddress },
     updatedIncome: { ...customer.currentIncome },
     completedAt,
   };
+}
+
+/**
+ * Inspects a customer's current ZenBank profile to determine whether identity reconfirmation,
+ * address verification, or income update is required (and whether payments are blocked).
+ */
+export function checkCustomerAccountStatus(customer: ZenBankCustomerProfile): AccountStatusCheck {
+  const isUpToDate = customer.kycStatus === 'UP_TO_DATE';
+  const identityOk = isUpToDate || Boolean(customer.lastReconfirmedAt);
+  const addressOk = isUpToDate || Boolean(customer.addressVerified);
+  const employerLower = customer.currentIncome.employer.toLowerCase();
+  const basisLower = customer.currentIncome.basisLabel.toLowerCase();
+  const incomeOk =
+    Boolean(customer.incomeVerified) ||
+    (isUpToDate &&
+      !employerLower.includes('nedeclarat') &&
+      !employerLower.includes('necesită actualizare') &&
+      !basisLower.includes('neverificat'));
+
+  const missingItems: string[] = [];
+  if (!identityOk) missingItems.push('Reconfirmare identitate');
+  if (!addressOk) missingItems.push('Verificare adresă');
+  if (!incomeOk) missingItems.push('Actualizare venit și angajator');
+
+  const dataUpdateRequired = missingItems.length > 0 || customer.paymentRestricted;
+
+  const checks: AccountCheckItem[] = [
+    {
+      id: 'identity',
+      label: 'Identitate',
+      status: identityOk ? 'OK' : 'ACTION_REQUIRED',
+      summary: identityOk ? 'Reconfirmată' : 'Necesită reconfirmare',
+    },
+    {
+      id: 'address',
+      label: 'Adresă',
+      status: addressOk ? 'OK' : 'ACTION_REQUIRED',
+      summary: addressOk ? 'Verificată și la zi' : 'Necesită verificare',
+    },
+    {
+      id: 'income',
+      label: 'Venit și angajator',
+      status: incomeOk ? 'OK' : 'ACTION_REQUIRED',
+      summary: incomeOk ? 'Verificat' : 'Angajator și venit neverificate',
+    },
+    {
+      id: 'payments',
+      label: 'Plăți și transferuri',
+      status: customer.paymentRestricted
+        ? 'BLOCKED'
+        : dataUpdateRequired
+          ? 'ACTION_REQUIRED'
+          : 'OK',
+      summary: customer.paymentRestricted
+        ? 'Blocate temporar până la actualizare'
+        : dataUpdateRequired
+          ? 'Active, dar profilul necesită actualizare'
+          : 'Active, fără restricții',
+    },
+  ];
+
+  return {
+    checkedAt: new Date().toISOString(),
+    dataUpdateRequired,
+    paymentRestricted: customer.paymentRestricted,
+    kycStatus: customer.kycStatus,
+    eudiRouteAvailable: true,
+    missingItems,
+    checks,
+  };
+}
+
+/**
+ * Automatically activates the blocked-payments state when a customer asks about payments
+ * while their ZenBank profile still requires a data update / identity reconfirmation.
+ */
+export function activatePaymentRestrictionIfUpdateNeeded(
+  customer: ZenBankCustomerProfile,
+): boolean {
+  const status = checkCustomerAccountStatus(customer);
+  if (!status.dataUpdateRequired) {
+    return false;
+  }
+
+  if (!customer.paymentRestricted) {
+    customer.paymentRestricted = true;
+    customer.kycStatus = 'INCOMPLETE_UPDATE';
+    customer.restrictionReason = PAYMENT_RESTRICTION_REASON;
+  }
+  return true;
 }

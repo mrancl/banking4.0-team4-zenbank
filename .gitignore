@@ -44,3 +44,8 @@ frontend/dist/
 .DS_Store
 .vscode/
 .idea/
+
+# Android wrapper builds & APKs
+android-wrapper/build/
+*.apk
+
