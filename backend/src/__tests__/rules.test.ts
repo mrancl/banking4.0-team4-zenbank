@@ -462,4 +462,335 @@ describe('evaluateVerificationResult & claimsParser', () => {
     expect(res.incomeDiff).toBeNull();
     expect(res.checks.some((c) => c.id === 'zenbank_customer_binding' && c.status === 'INFO')).toBe(true);
   });
+
+  it('Scenario 1a: blocks update when all signatures/dates are valid but INCOME_ATTESTATION partial subject names differ from PID', () => {
+    const radu = createSeedCustomer('radu', 'data_update');
+    const payload: DecryptedVerificationPayload = {
+      schema: 'eudi-verification-result/v1',
+      transactionId: 'tx-income-partial-name-mismatch',
+      outcome: { status: 'SATISFIED', basis: 'DISCLOSURE' },
+      credentials: [
+        {
+          type: 'PID_RO_SANDBOX',
+          format: 'dc+sd-jwt',
+          documentType: 'urn:banking40:sandbox:pid-ro:1',
+          validUntil: '2030-11-23T00:00:00Z',
+          claims: {
+            given_name: 'RADU',
+            family_name: 'STAN',
+            birthdate: '1986-06-08',
+            date_of_expiry: '2030-11-23',
+          },
+          checks: {
+            issuerSignature: true,
+            holderBinding: true,
+            validity: true,
+            trustedIssuer: true,
+            status: 'NOT_CHECKED',
+          },
+        },
+        {
+          type: 'ADDRESS',
+          format: 'dc+sd-jwt',
+          documentType: 'urn:banking40:sandbox:address:1',
+          validUntil: '2027-01-01T00:00:00Z',
+          claims: {
+            address: { formatted: 'Strada Exemplului 13, 300001 Timișoara, România' },
+          },
+          checks: {
+            issuerSignature: true,
+            holderBinding: true,
+            validity: true,
+            trustedIssuer: true,
+            status: 'NOT_CHECKED',
+          },
+        },
+        {
+          type: 'INCOME_ATTESTATION',
+          format: 'dc+sd-jwt',
+          documentType: 'urn:banking40:sandbox:income:1',
+          validUntil: '2027-01-01T00:00:00Z',
+          claims: {
+            // Partial subject (no birthdate), different person from Radu Stan
+            subject: { given_name: 'MARIA', family_name: 'IONESCU' },
+            monthly_income: {
+              periods: [{ month: '2026-10', net_amount_minor: 1650000 }],
+              currency: 'RON',
+              income_type: 'salary',
+              payer: { legal_name: 'Example Services 4 SRL' },
+            },
+          },
+          checks: {
+            issuerSignature: true,
+            holderBinding: true,
+            validity: true,
+            trustedIssuer: true,
+            status: 'NOT_CHECKED',
+          },
+        },
+      ],
+    };
+
+    const res = evaluateVerificationResult({
+      customer: radu,
+      payload,
+      cryptoChecks: [],
+      acknowledged: true,
+    });
+
+    expect(res.decision).toBe('SECURITY_BLOCKED');
+    expect(res.reasonCode).toBe('CROSS_CREDENTIAL_SUBJECT_MISMATCH');
+    expect(res.verifiedAddress).toBeNull();
+    expect(res.verifiedIncome).toBeNull();
+    expect(res.canConfirmAddressUpdate).toBe(false);
+    expect(res.canConfirmIncomeUpdate).toBe(false);
+    expect(res.canConfirmIdentityOnly).toBe(false);
+    expect(res.checks.some((c) => c.id === 'cross_credential_binding' && c.status === 'FAIL')).toBe(true);
+  });
+
+  it('Scenario 1b: blocks update on personal_numeric_code mismatch without leaking raw CNP', () => {
+    const radu = createSeedCustomer('radu', 'data_update');
+    const cnpA = '1860608000040';
+    const cnpB = '2900515999999';
+    const payload: DecryptedVerificationPayload = {
+      schema: 'eudi-verification-result/v1',
+      transactionId: 'tx-cnp-mismatch',
+      outcome: { status: 'SATISFIED', basis: 'DISCLOSURE' },
+      credentials: [
+        {
+          type: 'PID_RO_SANDBOX',
+          format: 'dc+sd-jwt',
+          documentType: 'urn:banking40:sandbox:pid-ro:1',
+          claims: {
+            given_name: 'RADU',
+            family_name: 'STAN',
+            birthdate: '1986-06-08',
+            personal_numeric_code: cnpA,
+            date_of_expiry: '2030-11-23',
+          },
+          checks: {
+            issuerSignature: true,
+            holderBinding: true,
+            validity: true,
+            trustedIssuer: true,
+            status: 'NOT_CHECKED',
+          },
+        },
+        {
+          type: 'INCOME_ATTESTATION',
+          format: 'dc+sd-jwt',
+          documentType: 'urn:banking40:sandbox:income:1',
+          claims: {
+            subject: {
+              given_name: 'RADU',
+              family_name: 'STAN',
+              birthdate: '1986-06-08',
+              personal_numeric_code: cnpB,
+            },
+            monthly_income: {
+              periods: [{ month: '2026-10', net_amount_minor: 1650000 }],
+              currency: 'RON',
+            },
+          },
+          checks: {
+            issuerSignature: true,
+            holderBinding: true,
+            validity: true,
+            trustedIssuer: true,
+            status: 'NOT_CHECKED',
+          },
+        },
+      ],
+    };
+
+    const res = evaluateVerificationResult({
+      customer: radu,
+      payload,
+      cryptoChecks: [],
+      acknowledged: true,
+    });
+
+    expect(res.decision).toBe('SECURITY_BLOCKED');
+    expect(res.reasonCode).toBe('CROSS_CREDENTIAL_SUBJECT_MISMATCH');
+    const serialized = JSON.stringify(res);
+    expect(serialized).not.toContain(cnpA);
+    expect(serialized).not.toContain(cnpB);
+  });
+
+  it('Scenario 2a: detects expired short-lived income when outcome is NOT_SATISFIED and suggests address fallback', () => {
+    const radu = createSeedCustomer('radu', 'data_update');
+    const now = new Date('2026-11-24T12:03:00Z');
+    const payload: DecryptedVerificationPayload = {
+      schema: 'eudi-verification-result/v1',
+      transactionId: 'tx-income-expired-not-satisfied',
+      outcome: { status: 'NOT_SATISFIED' },
+      credentials: [
+        {
+          type: 'PID_RO_SANDBOX',
+          format: 'dc+sd-jwt',
+          validUntil: '2026-11-25T12:00:00Z',
+          checks: { issuerSignature: true, holderBinding: true, validity: true, trustedIssuer: true },
+        },
+        {
+          type: 'ADDRESS',
+          format: 'dc+sd-jwt',
+          validUntil: '2026-11-25T12:00:00Z',
+          checks: { issuerSignature: true, holderBinding: true, validity: true, trustedIssuer: true },
+        },
+        {
+          type: 'INCOME_ATTESTATION',
+          format: 'dc+sd-jwt',
+          validFrom: '2026-11-24T12:00:00Z',
+          validUntil: '2026-11-24T12:02:00Z',
+          checks: { issuerSignature: true, holderBinding: true, validity: false, trustedIssuer: true },
+        },
+      ],
+    };
+
+    const res = evaluateVerificationResult({
+      customer: radu,
+      payload,
+      cryptoChecks: [],
+      acknowledged: true,
+      requestedScope: 'full',
+      now,
+    });
+
+    expect(res.decision).toBe('UNHAPPY_PATH');
+    expect(res.reasonCode).toBe('INCOME_CREDENTIAL_EXPIRED');
+    expect(res.expiredCredentials).toEqual(['INCOME']);
+    expect(res.verifiedAddress).toBeNull();
+    expect(res.verifiedIncome).toBeNull();
+    expect(res.checks.some((c) => c.id === 'income_expiry' && c.status === 'FAIL')).toBe(true);
+  });
+
+  it('Scenario 2b: excludes 2-minute expired income on SATISFIED presentation while allowing valid Address + Identity confirmation', () => {
+    const radu = createSeedCustomer('radu', 'data_update');
+    const now = new Date('2026-11-24T12:03:00Z');
+    const payload: DecryptedVerificationPayload = {
+      schema: 'eudi-verification-result/v1',
+      transactionId: 'tx-income-expired-satisfied',
+      outcome: { status: 'SATISFIED', basis: 'DISCLOSURE' },
+      credentials: [
+        {
+          type: 'PID_RO_SANDBOX',
+          format: 'dc+sd-jwt',
+          documentType: 'urn:banking40:sandbox:pid-ro:1',
+          validUntil: '2026-11-25T12:00:00Z',
+          claims: {
+            given_name: 'RADU',
+            family_name: 'STAN',
+            birthdate: '1986-06-08',
+            date_of_expiry: '2030-11-23',
+          },
+          checks: { issuerSignature: true, holderBinding: true, validity: true, trustedIssuer: true },
+        },
+        {
+          type: 'ADDRESS',
+          format: 'dc+sd-jwt',
+          documentType: 'urn:banking40:sandbox:address:1',
+          validUntil: '2026-11-25T12:00:00Z',
+          claims: {
+            address: { formatted: 'Strada Exemplului 13, 300001 Timișoara, România' },
+          },
+          checks: { issuerSignature: true, holderBinding: true, validity: true, trustedIssuer: true },
+        },
+        {
+          type: 'INCOME_ATTESTATION',
+          format: 'dc+sd-jwt',
+          documentType: 'urn:banking40:sandbox:income:1',
+          validFrom: '2026-11-24T12:00:00Z',
+          validUntil: '2026-11-24T12:02:00Z',
+          claims: {
+            monthly_income: {
+              periods: [{ month: '2026-10', net_amount_minor: 1650000 }],
+              currency: 'RON',
+              income_type: 'salary',
+              payer: { legal_name: 'Example Services 4 SRL' },
+            },
+          },
+          checks: { issuerSignature: true, holderBinding: true, validity: false, trustedIssuer: true },
+        },
+      ],
+    };
+
+    const res = evaluateVerificationResult({
+      customer: radu,
+      payload,
+      cryptoChecks: [],
+      acknowledged: true,
+      requestedScope: 'full',
+      now,
+    });
+
+    expect(res.decision).toBe('READY_FOR_CONFIRMATION');
+    expect(res.verifiedIncome).toBeNull();
+    expect(res.incomeDiff).toBeNull();
+    expect(res.canConfirmIncomeUpdate).toBe(false);
+    expect(res.canConfirmAddressUpdate).toBe(true);
+    expect(res.canConfirmIdentityOnly).toBe(true);
+    expect(res.expiredCredentials).toEqual(['INCOME']);
+    expect(res.warningNote).toContain('expirat');
+    expect(res.checks.some((c) => c.id === 'income_expiry' && c.status === 'FAIL')).toBe(true);
+  });
+
+  it('Scenario 1+2 combined: expired income belonging to a different person still triggers SECURITY_BLOCKED', () => {
+    const radu = createSeedCustomer('radu', 'data_update');
+    const now = new Date('2026-11-24T12:03:00Z');
+    const payload: DecryptedVerificationPayload = {
+      schema: 'eudi-verification-result/v1',
+      transactionId: 'tx-expired-and-mismatch',
+      outcome: { status: 'SATISFIED', basis: 'DISCLOSURE' },
+      credentials: [
+        {
+          type: 'PID_RO_SANDBOX',
+          format: 'dc+sd-jwt',
+          validUntil: '2026-11-25T12:00:00Z',
+          claims: {
+            given_name: 'RADU',
+            family_name: 'STAN',
+            birthdate: '1986-06-08',
+            date_of_expiry: '2030-11-23',
+          },
+          checks: { issuerSignature: true, holderBinding: true, validity: true, trustedIssuer: true },
+        },
+        {
+          type: 'ADDRESS',
+          format: 'dc+sd-jwt',
+          validUntil: '2026-11-25T12:00:00Z',
+          claims: {
+            address: { formatted: 'Strada Exemplului 13, 300001 Timișoara, România' },
+          },
+          checks: { issuerSignature: true, holderBinding: true, validity: true, trustedIssuer: true },
+        },
+        {
+          type: 'INCOME_ATTESTATION',
+          format: 'dc+sd-jwt',
+          validUntil: '2026-11-24T12:02:00Z',
+          claims: {
+            subject: { given_name: 'ALEX', family_name: 'POPESCU' },
+            monthly_income: {
+              periods: [{ month: '2026-10', net_amount_minor: 1650000 }],
+              currency: 'RON',
+            },
+          },
+          checks: { issuerSignature: true, holderBinding: true, validity: false, trustedIssuer: true },
+        },
+      ],
+    };
+
+    const res = evaluateVerificationResult({
+      customer: radu,
+      payload,
+      cryptoChecks: [],
+      acknowledged: true,
+      requestedScope: 'full',
+      now,
+    });
+
+    expect(res.decision).toBe('SECURITY_BLOCKED');
+    expect(res.reasonCode).toBe('CROSS_CREDENTIAL_SUBJECT_MISMATCH');
+    expect(res.canConfirmAddressUpdate).toBe(false);
+    expect(res.canConfirmIncomeUpdate).toBe(false);
+  });
 });

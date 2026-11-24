@@ -15,7 +15,7 @@ import {
   UserCheck,
 } from 'lucide-react';
 import { formatTitleCase } from '../format';
-import type { AccountStatusCheck, AgentStage, ChatCard } from '../types';
+import type { AccountStatusCheck, AgentStage, ChatCard, VerificationScope } from '../types';
 
 const JOURNEY_STEPS = ['Cerere', 'EUDI', 'Confirmă', 'Gata'];
 
@@ -88,12 +88,15 @@ function Countdown({ expiresAt }: { expiresAt: string }) {
 function WalletQrCardView({
   card,
   isActive,
+  isAndroidWrapper = false,
 }: {
   card: Extract<ChatCard, { type: 'wallet_qr' }>;
   isActive: boolean;
+  isAndroidWrapper?: boolean;
 }) {
   const [copied, setCopied] = useState<'adb' | 'link' | null>(null);
   const adbCmd = `adb shell am start -a android.intent.action.VIEW -d '"${card.deepLink}"'`;
+  const showQr = !isAndroidWrapper && !card.sameDevice;
 
   const copyText = async (val: string, kind: 'adb' | 'link') => {
     await navigator.clipboard.writeText(val);
@@ -127,21 +130,33 @@ function WalletQrCardView({
               <ExternalLink size={15} />
               Deschide în EUDI Wallet
             </a>
-            <div className="qr-divider" aria-hidden="true">
-              <span>sau scanează codul QR</span>
-            </div>
+            {showQr && (
+              <div className="qr-divider" aria-hidden="true">
+                <span>sau scanează codul QR</span>
+              </div>
+            )}
           </>
         )}
 
-        <div
-          className="qr-frame"
-          aria-label="Cod QR EUDI Wallet"
-          dangerouslySetInnerHTML={{ __html: card.qrSvg }}
-        />
+        {showQr && (
+          <div
+            className="qr-frame"
+            aria-label="Cod QR EUDI Wallet"
+            dangerouslySetInnerHTML={{ __html: card.qrSvg }}
+          />
+        )}
 
         <ol className="qr-steps">
           <li>
-            Apasă <strong>Deschide în EUDI Wallet</strong> pe acest dispozitiv sau scanează codul QR
+            {showQr ? (
+              <>
+                Apasă <strong>Deschide în EUDI Wallet</strong> pe acest dispozitiv sau scanează codul QR
+              </>
+            ) : (
+              <>
+                Apasă <strong>Deschide în EUDI Wallet</strong> pentru a deschide direct aplicația pe acest telefon
+              </>
+            )}
           </li>
           <li>
             Verifică datele cerute în aplicația <strong>EUDI Wallet</strong>
@@ -212,12 +227,14 @@ interface EudiCardRendererProps {
   loading: boolean;
   activeTransactionId: string | null;
   confirmedIds: Set<string>;
+  isAndroidWrapper?: boolean;
   onStartVerification: () => void;
   onConfirmUpdate: (
     pendingUpdateId: string,
     mode: 'UPDATE_PROFILE' | 'UPDATE_ADDRESS' | 'IDENTITY_ONLY',
   ) => void;
   onRetryVerification: () => void;
+  onStartFallbackScope?: (scope: VerificationScope) => void;
   doneButtonLabel: string;
   onDone: () => void;
 }
@@ -227,9 +244,11 @@ export function EudiCardRenderer({
   loading,
   activeTransactionId,
   confirmedIds,
+  isAndroidWrapper = false,
   onStartVerification,
   onConfirmUpdate,
   onRetryVerification,
+  onStartFallbackScope,
   doneButtonLabel,
   onDone,
 }: EudiCardRendererProps) {
@@ -276,15 +295,6 @@ export function EudiCardRenderer({
           ))}
         </div>
 
-        <div className="privacy-box">
-          <div className="privacy-box-title">Ce NU cerem și NU salvăm</div>
-          <ul className="privacy-box-list">
-            {card.excludedItems.map((item) => (
-              <li key={item}>{item}</li>
-            ))}
-          </ul>
-        </div>
-
         <button
           type="button"
           className="btn btn-primary btn-block"
@@ -302,6 +312,7 @@ export function EudiCardRenderer({
       <WalletQrCardView
         card={card}
         isActive={activeTransactionId === card.transactionId}
+        isAndroidWrapper={isAndroidWrapper}
       />
     );
   }
@@ -376,6 +387,13 @@ export function EudiCardRenderer({
                 )}
               </div>
             ))}
+          </div>
+        )}
+
+        {diffCard.warningNote && (
+          <div className="warn-banner" role="status">
+            <AlertTriangle size={15} color="var(--amber)" style={{ flexShrink: 0, marginTop: 1 }} />
+            <span>{diffCard.warningNote}</span>
           </div>
         )}
 
@@ -515,6 +533,17 @@ export function EudiCardRenderer({
             onClick={onRetryVerification}
           >
             Reîncearcă cu EUDI Wallet
+          </button>
+        )}
+
+        {recoveryCard.suggestedFallbackScope === 'address' && onStartFallbackScope && (
+          <button
+            type="button"
+            className="btn btn-secondary btn-block"
+            disabled={loading}
+            onClick={() => onStartFallbackScope('address')}
+          >
+            Actualizează doar adresa acum
           </button>
         )}
 

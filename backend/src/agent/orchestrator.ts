@@ -64,6 +64,8 @@ interface PendingUpdate {
   canUpdateAddress: boolean;
   canUpdateIncome: boolean;
   canConfirmIdentityOnly: boolean;
+  validUntil?: { pid?: string; address?: string; income?: string };
+  expiredCredentials?: Array<'PID' | 'ADDRESS' | 'INCOME'>;
 }
 
 interface SessionInternal {
@@ -584,8 +586,13 @@ export class JourneyOrchestrator {
     );
 
     if (session.flowChannel !== 'profile') {
-      const text =
-        scope === 'address'
+      const text = sameDevice
+        ? scope === 'address'
+          ? 'Apasă butonul Deschide în EUDI Wallet de mai jos și aprobă partajarea atestării de adresă.'
+          : scope === 'income'
+            ? 'Apasă butonul Deschide în EUDI Wallet de mai jos și aprobă partajarea atestării de venit.'
+            : 'Apasă butonul Deschide în EUDI Wallet de mai jos și aprobă partajarea datelor tale de identitate, adresă și venit.'
+        : scope === 'address'
           ? 'Scanează codul QR de mai jos cu aplicația EUDI Wallet (sau apasă Deschide în EUDI Wallet) și aprobă partajarea atestării de adresă.'
           : scope === 'income'
             ? 'Scanează codul QR de mai jos cu aplicația EUDI Wallet (sau apasă Deschide în EUDI Wallet) și aprobă partajarea atestării de venit.'
@@ -865,6 +872,8 @@ export class JourneyOrchestrator {
         canUpdateAddress: evaluation.canConfirmAddressUpdate,
         canUpdateIncome: evaluation.canConfirmIncomeUpdate,
         canConfirmIdentityOnly: evaluation.canConfirmIdentityOnly,
+        ...(evaluation.credentialValidUntil ? { validUntil: evaluation.credentialValidUntil } : {}),
+        ...(evaluation.expiredCredentials ? { expiredCredentials: evaluation.expiredCredentials } : {}),
       };
       session.stage = 'DIFF_READY';
 
@@ -926,6 +935,7 @@ export class JourneyOrchestrator {
           canUpdateIncome: evaluation.canConfirmIncomeUpdate,
           canConfirmIdentityOnly: evaluation.canConfirmIdentityOnly,
           revocationNote,
+          ...(evaluation.warningNote ? { warningNote: evaluation.warningNote } : {}),
         };
         session.activeFlowCard = card;
         if (session.flowChannel !== 'profile') {
@@ -967,18 +977,27 @@ export class JourneyOrchestrator {
         `UNHAPPY_${evaluation.reasonCode}`,
         evaluation.message,
       );
+      const isIncomeExpired = evaluation.reasonCode === 'INCOME_CREDENTIAL_EXPIRED';
       const card: ChatCard = {
         type: 'recovery',
         code: evaluation.reasonCode,
-        title: 'Verificarea nu a fost finalizată',
+        title: isIncomeExpired
+          ? 'Atestarea de venit a expirat'
+          : 'Verificarea nu a fost finalizată',
         detail: evaluation.message,
         simulated,
         canRetryEudi: true,
         canConfirmIdentityOnly: false,
-        fallbackOptions: [
-          'Reîncearcă verificarea cu EUDI Wallet',
-          'Încarcă actul de identitate, dovada adresei și adeverința de venit sau programează o vizită în sucursală',
-        ],
+        ...(isIncomeExpired ? { suggestedFallbackScope: 'address' as VerificationScope } : {}),
+        fallbackOptions: isIncomeExpired
+          ? [
+              'Reemite atestarea de venit în EUDI Wallet și reîncearcă actualizarea completă',
+              'Actualizează acum doar adresa de domiciliu (documentul de adresă rămâne valid)',
+            ]
+          : [
+              'Reîncearcă verificarea cu EUDI Wallet',
+              'Încarcă actul de identitate, dovada adresei și adeverința de venit sau programează o vizită în sucursală',
+            ],
       };
       session.activeFlowCard = card;
       if (session.flowChannel !== 'profile') {
@@ -1112,6 +1131,12 @@ export class JourneyOrchestrator {
     }
   }
 
+  private isCredentialTimestampExpired(iso?: string, nowMs = Date.now()): boolean {
+    if (!iso) return false;
+    const parsed = Date.parse(iso);
+    return Number.isFinite(parsed) && parsed <= nowMs;
+  }
+
   confirmUpdate(
     sessionId: string,
     opts: { pendingUpdateId: string; mode: 'UPDATE_PROFILE' | 'UPDATE_ADDRESS' | 'IDENTITY_ONLY' },
@@ -1154,6 +1179,150 @@ export class JourneyOrchestrator {
       pending.canUpdateAddress;
     const updateIncome = opts.mode === 'UPDATE_PROFILE' && pending.canUpdateIncome;
 
+    // TOCTOU re-validation against short-lived credential timestamps (e.g. 2-minute TTL)
+    const nowMs = Date.now();
+    if (this.isCredentialTimestampExpired(pending.validUntil?.pid, nowMs)) {
+      session.pendingUpdate = null;
+      session.stage = 'DECLINED';
+      session.lastTrustChecks = [
+        ...session.lastTrustChecks,
+        {
+          id: 'pid_expiry_toctou',
+          label: 'Valabilitate document PID la confirmare',
+          status: 'FAIL',
+          detail: 'Documentul de identitate (PID) a expirat înainte de confirmarea finală.',
+        },
+      ];
+      this.addAudit(
+        session,
+        'RULES',
+        'CREDENTIAL_EXPIRED_BEFORE_CONFIRM',
+        'Confirmare oprită: documentul PID a expirat înainte de salvarea datelor.',
+      );
+      const expiredCard: ChatCard = {
+        type: 'recovery',
+        code: 'CREDENTIAL_EXPIRED',
+        title: 'Documentul de identitate a expirat',
+        detail:
+          'Documentul tău de identitate din EUDI Wallet a expirat între timp. Reemite documentul în wallet și pornește o verificare nouă.',
+        simulated: false,
+        canRetryEudi: true,
+        canConfirmIdentityOnly: false,
+        fallbackOptions: ['Pornește o nouă verificare cu EUDI Wallet'],
+      };
+      session.activeFlowCard = expiredCard;
+      if (session.flowChannel !== 'profile') {
+        this.addMessage(session, 'agent', expiredCard.detail, expiredCard);
+      }
+      return this.getPublicState(sessionId);
+    }
+
+    const incomeExpiredAtConfirm =
+      updateIncome && this.isCredentialTimestampExpired(pending.validUntil?.income, nowMs);
+    const addressExpiredAtConfirm =
+      updateAddress && this.isCredentialTimestampExpired(pending.validUntil?.address, nowMs);
+
+    if (incomeExpiredAtConfirm || addressExpiredAtConfirm) {
+      if (incomeExpiredAtConfirm) {
+        this.addAudit(
+          session,
+          'RULES',
+          'INCOME_EXPIRED_BEFORE_CONFIRM',
+          'Atestarea de venit a expirat înainte de confirmare și a fost exclusă.',
+        );
+        session.lastTrustChecks = [
+          ...session.lastTrustChecks,
+          {
+            id: 'income_expiry_toctou',
+            label: 'Valabilitate atestare venit la confirmare',
+            status: 'FAIL',
+            detail: 'Atestarea de venit a expirat înainte de confirmare și a fost exclusă.',
+          },
+        ];
+        pending.verifiedIncome = null;
+        pending.canUpdateIncome = false;
+        pending.expiredCredentials = Array.from(
+          new Set([...(pending.expiredCredentials ?? []), 'INCOME']),
+        );
+      }
+
+      if (addressExpiredAtConfirm) {
+        this.addAudit(
+          session,
+          'RULES',
+          'ADDRESS_EXPIRED_BEFORE_CONFIRM',
+          'Atestarea de adresă a expirat înainte de confirmare și a fost exclusă.',
+        );
+        session.lastTrustChecks = [
+          ...session.lastTrustChecks,
+          {
+            id: 'address_expiry_toctou',
+            label: 'Valabilitate atestare adresă la confirmare',
+            status: 'FAIL',
+            detail: 'Atestarea de adresă a expirat înainte de confirmare și a fost exclusă.',
+          },
+        ];
+        pending.verifiedAddress = null;
+        pending.canUpdateAddress = false;
+        pending.expiredCredentials = Array.from(
+          new Set([...(pending.expiredCredentials ?? []), 'ADDRESS']),
+        );
+      }
+
+      const addressStillValid =
+        pending.canUpdateAddress && !this.isCredentialTimestampExpired(pending.validUntil?.address, nowMs);
+      const incomeStillValid =
+        pending.canUpdateIncome && !this.isCredentialTimestampExpired(pending.validUntil?.income, nowMs);
+
+      if (addressStillValid || incomeStillValid || pending.canConfirmIdentityOnly) {
+        const warningNote = incomeExpiredAtConfirm && !addressExpiredAtConfirm
+          ? 'Atestarea de venit a expirat între timp și a fost exclusă din actualizare. Adresa și identitatea rămân valide — apasă din nou confirmarea pentru a salva doar datele valide.'
+          : addressExpiredAtConfirm && !incomeExpiredAtConfirm
+            ? 'Atestarea de adresă a expirat între timp și a fost exclusă din actualizare. Datele valide rămase sunt pregătite pentru confirmare.'
+            : 'Documentele de adresă și venit au expirat între timp; poți confirma doar reconfirmarea identității sau poți reîncearca verificarea.';
+
+        if (session.activeFlowCard?.type === 'diff_confirm') {
+          const updatedCard: ChatCard = {
+            ...session.activeFlowCard,
+            ...(pending.verifiedAddress === null
+              ? { verifiedAddress: null, addressDiff: null, canUpdateAddress: false }
+              : {}),
+            ...(pending.verifiedIncome === null
+              ? { verifiedIncome: null, incomeDiff: null, canUpdateIncome: false }
+              : {}),
+            warningNote,
+          };
+          session.activeFlowCard = updatedCard;
+          if (session.flowChannel !== 'profile') {
+            this.addMessage(session, 'agent', warningNote, updatedCard);
+          }
+        }
+        return this.getPublicState(sessionId);
+      }
+
+      session.pendingUpdate = null;
+      session.stage = 'DECLINED';
+      const expiredCard: ChatCard = {
+        type: 'recovery',
+        code: incomeExpiredAtConfirm ? 'INCOME_CREDENTIAL_EXPIRED' : 'CREDENTIAL_EXPIRED',
+        title: incomeExpiredAtConfirm
+          ? 'Atestarea de venit a expirat'
+          : 'Atestarea de adresă a expirat',
+        detail: incomeExpiredAtConfirm
+          ? 'Atestarea de venit a expirat înainte de confirmare. Reemite documentul în EUDI Wallet și reîncearcă.'
+          : 'Atestarea de adresă a expirat înainte de confirmare. Reemite documentul în EUDI Wallet și reîncearcă.',
+        simulated: false,
+        canRetryEudi: true,
+        canConfirmIdentityOnly: false,
+        fallbackOptions: ['Reemite documentul în EUDI Wallet și pornește o nouă verificare'],
+      };
+      session.activeFlowCard = expiredCard;
+      if (session.flowChannel !== 'profile') {
+        this.addMessage(session, 'agent', expiredCard.detail, expiredCard);
+      }
+      return this.getPublicState(sessionId);
+    }
+
     const receipt = applyZenBankProfileUpdate(session.customer, {
       updateAddress,
       verifiedAddress: pending.verifiedAddress,
@@ -1161,6 +1330,7 @@ export class JourneyOrchestrator {
       verifiedIncome: pending.verifiedIncome,
       scope: pendingScope,
       identityVerified: pending.canConfirmIdentityOnly,
+      partialDueToExpiry: Boolean(pending.expiredCredentials?.length),
     });
 
     session.pendingUpdate = null;

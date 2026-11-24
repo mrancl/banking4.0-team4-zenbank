@@ -2,14 +2,27 @@ import type {
   DecryptedVerificationPayload,
   IdentitySubject,
   KycIncomeProfile,
+  PartialIdentitySubject,
   StructuredAddress,
   VerificationCredentialResult,
 } from '../types.js';
+
+export type CredentialKind = 'PID' | 'ADDRESS' | 'INCOME' | 'OTHER';
+
+export interface CredentialValidityIssue {
+  kind: CredentialKind;
+  label: string;
+  validUntil: string | null;
+  reason: string;
+}
 
 export interface ParsedClaimsResult {
   pidIdentity: IdentitySubject | null;
   addressIdentity: IdentitySubject | null;
   incomeIdentity: IdentitySubject | null;
+  pidSubject: PartialIdentitySubject | null;
+  addressSubject: PartialIdentitySubject | null;
+  incomeSubject: PartialIdentitySubject | null;
   verifiedAddress: StructuredAddress | null;
   verifiedIncome: KycIncomeProfile | null;
   revocationStatuses: string[];
@@ -21,6 +34,9 @@ export interface ParsedClaimsResult {
   ignoredPidFields: string[];
   ignoredRawFields: string[];
   integrityFailures: string[];
+  hardIntegrityFailures: string[];
+  validityIssues: CredentialValidityIssue[];
+  credentialValidUntil: { pid?: string; address?: string; income?: string };
   integrityVerifiedCount: number;
   issuerAuthorities: string[];
 }
@@ -158,14 +174,51 @@ function parseFormattedAddress(formatted: string): {
 function extractIdentity(
   claims: Record<string, unknown> | undefined,
 ): IdentitySubject | null {
-  const givenName = firstClaim(claims, ['given_name', 'subject.given_name']);
-  const familyName = firstClaim(claims, ['family_name', 'subject.family_name']);
-  const birthdate = firstClaim(claims, ['birthdate', 'subject.birthdate', 'birth_date']);
+  const givenName = firstClaim(claims, ['given_name', 'subject.given_name', 'holder.given_name']);
+  const familyName = firstClaim(claims, ['family_name', 'subject.family_name', 'holder.family_name']);
+  const birthdate = firstClaim(claims, [
+    'birthdate',
+    'subject.birthdate',
+    'birth_date',
+    'subject.birth_date',
+  ]);
 
   if (!givenName || !familyName || !birthdate) {
     return null;
   }
   return { givenName, familyName, birthdate };
+}
+
+function extractPartialIdentity(
+  claims: Record<string, unknown> | undefined,
+): PartialIdentitySubject | null {
+  const givenName = firstClaim(claims, ['given_name', 'subject.given_name', 'holder.given_name']);
+  const familyName = firstClaim(claims, ['family_name', 'subject.family_name', 'holder.family_name']);
+  const birthdate = firstClaim(claims, [
+    'birthdate',
+    'subject.birthdate',
+    'birth_date',
+    'subject.birth_date',
+  ]);
+  const personalNumericCode = firstClaim(claims, [
+    'personal_numeric_code',
+    'subject.personal_numeric_code',
+    'cnp',
+    'subject.cnp',
+    'national_id',
+    'subject.national_id',
+  ]);
+
+  if (!givenName && !familyName && !birthdate && !personalNumericCode) {
+    return null;
+  }
+
+  return {
+    ...(givenName ? { givenName } : {}),
+    ...(familyName ? { familyName } : {}),
+    ...(birthdate ? { birthdate } : {}),
+    ...(personalNumericCode ? { personalNumericCode } : {}),
+  };
 }
 
 function buildFormattedAddress(
@@ -332,7 +385,7 @@ function extractIncome(
 function evaluateCredentialIntegrity(
   cred: VerificationCredentialResult,
   label: string,
-  failures: string[],
+  hardFailures: string[],
   authorities: Set<string>,
 ): boolean {
   if (cred.issuer?.authority?.trim()) {
@@ -344,18 +397,17 @@ function evaluateCredentialIntegrity(
     return false;
   }
 
-  const keys: Array<'issuerSignature' | 'holderBinding' | 'validity' | 'trustedIssuer'> = [
+  const hardKeys: Array<'issuerSignature' | 'holderBinding' | 'trustedIssuer'> = [
     'issuerSignature',
     'holderBinding',
-    'validity',
     'trustedIssuer',
   ];
 
-  let allTruePresent = true;
-  for (const key of keys) {
+  let allTruePresent = checks.validity === true;
+  for (const key of hardKeys) {
     const val = checks[key];
     if (val === false) {
-      failures.push(`${label}.${key}=false`);
+      hardFailures.push(`${label}.${key}=false`);
       allTruePresent = false;
     } else if (val !== true) {
       allTruePresent = false;
@@ -364,16 +416,84 @@ function evaluateCredentialIntegrity(
   return allTruePresent;
 }
 
+function collectCredentialValidityIssues(
+  cred: VerificationCredentialResult,
+  kind: CredentialKind,
+  label: string,
+  now: Date,
+  issues: CredentialValidityIssue[],
+): void {
+  const validUntil = typeof cred.validUntil === 'string' && cred.validUntil.trim()
+    ? cred.validUntil.trim()
+    : null;
+  const validFrom = typeof cred.validFrom === 'string' && cred.validFrom.trim()
+    ? cred.validFrom.trim()
+    : null;
+
+  if (cred.checks?.validity === false) {
+    issues.push({
+      kind,
+      label,
+      validUntil,
+      reason: `${label}.validity=false`,
+    });
+  }
+
+  const nowMs = now.getTime();
+  if (validUntil) {
+    const untilMs = Date.parse(validUntil);
+    if (Number.isFinite(untilMs) && untilMs <= nowMs) {
+      issues.push({
+        kind,
+        label,
+        validUntil,
+        reason: `${label}.validUntil_expired`,
+      });
+    }
+  }
+
+  if (validFrom) {
+    const fromMs = Date.parse(validFrom);
+    if (Number.isFinite(fromMs) && fromMs > nowMs) {
+      issues.push({
+        kind,
+        label,
+        validUntil,
+        reason: `${label}.validFrom_not_yet_valid`,
+      });
+    }
+  }
+
+  if (kind === 'PID') {
+    const dateOfExpiry = firstClaim(cred.claims, ['date_of_expiry']);
+    if (dateOfExpiry && /^\d{4}-\d{2}-\d{2}$/.test(dateOfExpiry)) {
+      const today = now.toISOString().slice(0, 10);
+      if (dateOfExpiry < today) {
+        issues.push({
+          kind: 'PID',
+          label,
+          validUntil: dateOfExpiry,
+          reason: `${label}.date_of_expiry_expired`,
+        });
+      }
+    }
+  }
+}
+
 /**
  * Extracts normalized identity, address, and KYC income claims from a verified Tremend result payload.
  */
 export function parseVerifiedCredentials(
   payload: DecryptedVerificationPayload,
+  now: Date = new Date(),
 ): ParsedClaimsResult {
   const credentials = payload.credentials ?? [];
   let pidIdentity: IdentitySubject | null = null;
   let addressIdentity: IdentitySubject | null = null;
   let incomeIdentity: IdentitySubject | null = null;
+  let pidSubject: PartialIdentitySubject | null = null;
+  let addressSubject: PartialIdentitySubject | null = null;
+  let incomeSubject: PartialIdentitySubject | null = null;
   let verifiedAddress: StructuredAddress | null = null;
   let fallbackPidAddress: StructuredAddress | null = null;
   let verifiedIncome: KycIncomeProfile | null = null;
@@ -387,23 +507,42 @@ export function parseVerifiedCredentials(
   const revocationStatuses: string[] = [];
   const ignoredPidFieldsSet = new Set<string>();
   const ignoredRawFieldsSet = new Set<string>();
-  const integrityFailures: string[] = [];
+  const hardIntegrityFailures: string[] = [];
+  const validityIssues: CredentialValidityIssue[] = [];
+  const credentialValidUntil: { pid?: string; address?: string; income?: string } = {};
   const authoritySet = new Set<string>();
 
   for (const cred of credentials) {
     const label = cred.type || cred.documentType || 'CREDENTIAL';
-    if (evaluateCredentialIntegrity(cred, label, integrityFailures, authoritySet)) {
+    const kind: CredentialKind = isPidCredential(cred)
+      ? 'PID'
+      : isAddressCredential(cred)
+        ? 'ADDRESS'
+        : isIncomeCredential(cred)
+          ? 'INCOME'
+          : 'OTHER';
+
+    if (evaluateCredentialIntegrity(cred, label, hardIntegrityFailures, authoritySet)) {
       integrityVerifiedCount += 1;
     }
+    collectCredentialValidityIssues(cred, kind, label, now, validityIssues);
 
     const status = cred.checks?.status;
     revocationStatuses.push(typeof status === 'string' && status.trim() ? status.trim() : 'NOT_CHECKED');
 
-    if (isPidCredential(cred)) {
+    const rawValidUntil =
+      typeof cred.validUntil === 'string' && cred.validUntil.trim() ? cred.validUntil.trim() : undefined;
+
+    if (kind === 'PID') {
       hasPidCredential = true;
       const extracted = extractIdentity(cred.claims);
+      const partial = extractPartialIdentity(cred.claims);
       pidIdentity = pidIdentity ?? extracted;
+      pidSubject = pidSubject ?? partial;
       pidExpiryDate = pidExpiryDate ?? firstClaim(cred.claims, ['date_of_expiry']);
+      if (rawValidUntil && !credentialValidUntil.pid) {
+        credentialValidUntil.pid = rawValidUntil;
+      }
 
       if (cred.claims) {
         for (const key of Object.keys(cred.claims)) {
@@ -417,25 +556,42 @@ export function parseVerifiedCredentials(
         }
       }
       fallbackPidAddress = fallbackPidAddress ?? extractAddress(cred.claims);
-    } else if (isAddressCredential(cred)) {
+    } else if (kind === 'ADDRESS') {
       hasAddressCredential = true;
       addressIdentity = addressIdentity ?? extractIdentity(cred.claims);
+      addressSubject = addressSubject ?? extractPartialIdentity(cred.claims);
       verifiedAddress = verifiedAddress ?? extractAddress(cred.claims);
-    } else if (isIncomeCredential(cred)) {
+      if (rawValidUntil && !credentialValidUntil.address) {
+        credentialValidUntil.address = rawValidUntil;
+      }
+    } else if (kind === 'INCOME') {
       hasIncomeCredential = true;
       incomeIdentity = incomeIdentity ?? extractIdentity(cred.claims);
+      incomeSubject = incomeSubject ?? extractPartialIdentity(cred.claims);
       verifiedIncome = verifiedIncome ?? extractIncome(cred.claims, ignoredRawFieldsSet);
+      if (rawValidUntil && !credentialValidUntil.income) {
+        credentialValidUntil.income = rawValidUntil;
+      }
     } else {
       pidIdentity = pidIdentity ?? extractIdentity(cred.claims);
+      pidSubject = pidSubject ?? extractPartialIdentity(cred.claims);
       verifiedAddress = verifiedAddress ?? extractAddress(cred.claims);
       verifiedIncome = verifiedIncome ?? extractIncome(cred.claims, ignoredRawFieldsSet);
     }
   }
 
+  const integrityFailures = [
+    ...hardIntegrityFailures,
+    ...validityIssues.map((v) => v.reason),
+  ];
+
   return {
     pidIdentity,
     addressIdentity,
     incomeIdentity,
+    pidSubject,
+    addressSubject,
+    incomeSubject,
     verifiedAddress: verifiedAddress ?? fallbackPidAddress,
     verifiedIncome,
     revocationStatuses,
@@ -447,6 +603,9 @@ export function parseVerifiedCredentials(
     ignoredPidFields: Array.from(ignoredPidFieldsSet),
     ignoredRawFields: Array.from(ignoredRawFieldsSet),
     integrityFailures,
+    hardIntegrityFailures,
+    validityIssues,
+    credentialValidUntil,
     integrityVerifiedCount,
     issuerAuthorities: Array.from(authoritySet),
   };

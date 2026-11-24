@@ -498,4 +498,130 @@ describe('ZenBank EUDI API end-to-end journeys', () => {
     expect(confirmRes.body.stage).toBe('COMPLETED');
     expect(confirmRes.body.customer.kycStatus).toBe('UP_TO_DATE');
   });
+
+  it('Scenario 2c (TOCTOU): excludes short-lived income that expires between poll and confirmUpdate, then saves valid address only', async () => {
+    const { app, mockVerifier } = await setupTestServer();
+    const sid = 'sess-toctou-income-expiry';
+
+    await request(app)
+      .post('/api/profile/start-update')
+      .set('X-Session-Id', sid)
+      .send({ scope: 'full' });
+
+    const startRes = await request(app)
+      .post('/api/verifications/start')
+      .set('X-Session-Id', sid)
+      .send({});
+    expect(startRes.status).toBe(201);
+
+    const txId = startRes.body.activeVerification.transactionId as string;
+    const longExpiry = new Date(Date.now() + 600_000).toISOString();
+    const shortIncomeExpiry = new Date(Date.now() + 350).toISOString();
+
+    await mockVerifier.approveTransaction(txId, 'SATISFIED_BOTH', {
+      credentials: [
+        {
+          type: 'PID_RO_SANDBOX',
+          format: 'dc+sd-jwt',
+          documentType: 'urn:banking40:sandbox:pid-ro:1',
+          validUntil: longExpiry,
+          claims: {
+            given_name: 'RADU',
+            family_name: 'STAN',
+            birthdate: '1986-06-08',
+            date_of_expiry: '2030-11-23',
+          },
+          checks: {
+            issuerSignature: true,
+            holderBinding: true,
+            validity: true,
+            trustedIssuer: true,
+            status: 'NOT_CHECKED',
+          },
+        },
+        {
+          type: 'ADDRESS',
+          format: 'dc+sd-jwt',
+          documentType: 'urn:banking40:sandbox:address:1',
+          validUntil: longExpiry,
+          claims: {
+            address: {
+              formatted: 'Strada Exemplului 13, 300001 Timișoara, România',
+            },
+          },
+          checks: {
+            issuerSignature: true,
+            holderBinding: true,
+            validity: true,
+            trustedIssuer: true,
+            status: 'NOT_CHECKED',
+          },
+        },
+        {
+          type: 'INCOME_ATTESTATION',
+          format: 'dc+sd-jwt',
+          documentType: 'urn:banking40:sandbox:income:1',
+          validUntil: shortIncomeExpiry,
+          claims: {
+            monthly_income: {
+              periods: [
+                { month: '2026-09', net_amount_minor: 1652500 },
+                { month: '2026-10', net_amount_minor: 1662500 },
+              ],
+              currency: 'RON',
+              income_type: 'salary',
+              payer: { legal_name: 'Example Services 4 SRL' },
+            },
+          },
+          checks: {
+            issuerSignature: true,
+            holderBinding: true,
+            validity: true,
+            trustedIssuer: true,
+            status: 'NOT_CHECKED',
+          },
+        },
+      ],
+    });
+
+    const pollRes = await request(app)
+      .get(`/api/verifications/${txId}/poll`)
+      .set('X-Session-Id', sid);
+    expect(pollRes.status).toBe(200);
+    expect(pollRes.body.stage).toBe('DIFF_READY');
+    expect(pollRes.body.activeFlowCard.canUpdateAddress).toBe(true);
+    expect(pollRes.body.activeFlowCard.canUpdateIncome).toBe(true);
+    const pendingUpdateId = pollRes.body.activeFlowCard.pendingUpdateId as string;
+
+    // Wait past shortIncomeExpiry so income expires before confirmUpdate runs
+    await new Promise((resolve) => setTimeout(resolve, 450));
+
+    const firstConfirm = await request(app)
+      .post('/api/profile/confirm-update')
+      .set('X-Session-Id', sid)
+      .send({ pendingUpdateId, mode: 'UPDATE_PROFILE' });
+
+    expect(firstConfirm.status).toBe(200);
+    expect(firstConfirm.body.stage).toBe('DIFF_READY');
+    expect(firstConfirm.body.activeFlowCard.canUpdateIncome).toBe(false);
+    expect(firstConfirm.body.activeFlowCard.canUpdateAddress).toBe(true);
+    expect(firstConfirm.body.activeFlowCard.incomeDiff).toBeNull();
+    expect(firstConfirm.body.activeFlowCard.warningNote).toContain('Atestarea de venit a expirat');
+    // Expired income must NOT have been written to ZenBank core
+    expect(firstConfirm.body.customer.currentIncome.employer).toBe('Nedeclarat / Necesită actualizare');
+
+    // Second explicit confirm saves only the valid address + identity and leaves KYC INCOMPLETE_UPDATE
+    const secondConfirm = await request(app)
+      .post('/api/profile/confirm-update')
+      .set('X-Session-Id', sid)
+      .send({ pendingUpdateId, mode: 'UPDATE_PROFILE' });
+
+    expect(secondConfirm.status).toBe(200);
+    expect(secondConfirm.body.stage).toBe('COMPLETED');
+    expect(secondConfirm.body.customer.currentAddress.streetAddress).toBe('Strada Exemplului 13');
+    expect(secondConfirm.body.customer.addressVerified).toBe(true);
+    expect(secondConfirm.body.customer.incomeVerified).toBe(false);
+    expect(secondConfirm.body.customer.currentIncome.employer).toBe('Nedeclarat / Necesită actualizare');
+    expect(secondConfirm.body.customer.kycStatus).toBe('INCOMPLETE_UPDATE');
+  });
 });

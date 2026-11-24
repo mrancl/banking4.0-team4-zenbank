@@ -10,6 +10,7 @@ interface ChatStreamProps {
   loading: boolean;
   activeTransactionId: string | null;
   confirmedIds: Set<string>;
+  isAndroidWrapper?: boolean;
   onSendChat: (
     message: string,
     quickAction?: 'START_DATA_UPDATE' | 'EXPLAIN_PAYMENT_RESTRICTION' | 'EXPLAIN_PRIVACY',
@@ -39,6 +40,7 @@ export function ChatStream({
   loading,
   activeTransactionId,
   confirmedIds,
+  isAndroidWrapper = false,
   onSendChat,
   onStartVerification,
   onConfirmUpdate,
@@ -87,9 +89,13 @@ export function ChatStream({
                 loading={loading}
                 activeTransactionId={activeTransactionId}
                 confirmedIds={confirmedIds}
+                isAndroidWrapper={isAndroidWrapper}
                 onStartVerification={onStartVerification}
                 onConfirmUpdate={onConfirmUpdate}
                 onRetryVerification={onRetryVerification}
+                onStartFallbackScope={(scope) =>
+                  onSendChat('Vreau să îmi actualizez doar adresa acum', 'START_DATA_UPDATE', scope)
+                }
                 doneButtonLabel="Vezi datele actualizate"
                 onDone={onGoHome}
               />

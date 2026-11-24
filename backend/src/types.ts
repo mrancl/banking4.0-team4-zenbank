@@ -56,6 +56,8 @@ export interface VerificationCredentialResult {
   type?: string;
   format?: string;
   documentType?: string;
+  validFrom?: string | null;
+  validUntil?: string | null;
   claims?: Record<string, unknown>;
   issuer?: {
     country?: string;
@@ -90,6 +92,13 @@ export interface IdentitySubject {
   givenName: string;
   familyName: string;
   birthdate: string;
+}
+
+export interface PartialIdentitySubject {
+  givenName?: string;
+  familyName?: string;
+  birthdate?: string;
+  personalNumericCode?: string;
 }
 
 export interface AddressFieldDiff {
@@ -142,6 +151,9 @@ export interface BankRuleEvaluation {
   canConfirmAddressUpdate: boolean;
   canConfirmIncomeUpdate: boolean;
   canConfirmIdentityOnly: boolean;
+  expiredCredentials?: Array<'PID' | 'ADDRESS' | 'INCOME'>;
+  credentialValidUntil?: { pid?: string; address?: string; income?: string };
+  warningNote?: string;
 }
 
 export type AgentStage =
@@ -219,6 +231,7 @@ export type ChatCard =
       canUpdateIncome: boolean;
       canConfirmIdentityOnly: boolean;
       revocationNote: string;
+      warningNote?: string;
     }
   | {
       type: 'completed';
@@ -242,6 +255,7 @@ export type ChatCard =
       canRetryEudi: boolean;
       canConfirmIdentityOnly: boolean;
       pendingUpdateId?: string;
+      suggestedFallbackScope?: VerificationScope;
       fallbackOptions: string[];
     };
 

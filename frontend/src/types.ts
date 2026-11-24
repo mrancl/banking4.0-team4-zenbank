@@ -125,6 +125,7 @@ export type ChatCard =
       canUpdateIncome: boolean;
       canConfirmIdentityOnly: boolean;
       revocationNote: string;
+      warningNote?: string;
     }
   | {
       type: 'completed';
@@ -148,6 +149,7 @@ export type ChatCard =
       canRetryEudi: boolean;
       canConfirmIdentityOnly: boolean;
       pendingUpdateId?: string;
+      suggestedFallbackScope?: VerificationScope;
       fallbackOptions: string[];
     };
 

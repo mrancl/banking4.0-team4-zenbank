@@ -31,6 +31,7 @@ interface HomeTabProps {
   activeTransactionId: string | null;
   confirmedIds: Set<string>;
   profileFlowOpen: boolean;
+  isAndroidWrapper?: boolean;
   loading: boolean;
   onStartProfileUpdate: (scope?: VerificationScope) => void;
   onCloseProfileFlow: () => void;
@@ -52,6 +53,7 @@ export function HomeTab({
   activeTransactionId,
   confirmedIds,
   profileFlowOpen,
+  isAndroidWrapper = false,
   loading,
   onStartProfileUpdate,
   onCloseProfileFlow,
@@ -86,9 +88,11 @@ export function HomeTab({
             loading={loading}
             activeTransactionId={activeTransactionId}
             confirmedIds={confirmedIds}
+            isAndroidWrapper={isAndroidWrapper}
             onStartVerification={onStartVerification}
             onConfirmUpdate={onConfirmUpdate}
             onRetryVerification={onRetryVerification}
+            onStartFallbackScope={onStartProfileUpdate}
             doneButtonLabel="Înapoi la datele mele"
             onDone={onCloseProfileFlow}
           />

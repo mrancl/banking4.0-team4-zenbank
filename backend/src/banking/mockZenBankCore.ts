@@ -136,6 +136,7 @@ export function applyZenBankProfileUpdate(
     verifiedIncome: KycIncomeProfile | null;
     scope?: VerificationScope;
     identityVerified?: boolean;
+    partialDueToExpiry?: boolean;
   },
 ): ProfileUpdateReceipt {
   const completedAt = new Date().toISOString();
@@ -162,10 +163,12 @@ export function applyZenBankProfileUpdate(
   const allPartialComplete =
     Boolean(customer.addressVerified) && Boolean(customer.incomeVerified);
 
-  if (isFullScope || allPartialComplete) {
+  if ((isFullScope && !opts.partialDueToExpiry) || allPartialComplete) {
     customer.kycStatus = 'UP_TO_DATE';
     customer.paymentRestricted = false;
     customer.restrictionReason = null;
+  } else if (opts.partialDueToExpiry) {
+    customer.kycStatus = 'INCOMPLETE_UPDATE';
   }
 
   return {

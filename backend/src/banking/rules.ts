@@ -8,6 +8,7 @@ import type {
   IncomeDiff,
   IncomeFieldDiff,
   KycIncomeProfile,
+  PartialIdentitySubject,
   StructuredAddress,
   TrustCheckItem,
   VerificationScope,
@@ -26,12 +27,32 @@ export function normalizeForMatch(value: string): string {
     .toLowerCase();
 }
 
-function subjectsMatch(a: IdentitySubject, b: IdentitySubject): boolean {
-  return (
-    normalizeForMatch(a.givenName) === normalizeForMatch(b.givenName) &&
-    normalizeForMatch(a.familyName) === normalizeForMatch(b.familyName) &&
-    a.birthdate.trim() === b.birthdate.trim()
-  );
+function findSubjectConflicts(
+  a: PartialIdentitySubject,
+  b: PartialIdentitySubject,
+): string[] {
+  const conflicts: string[] = [];
+  if (a.personalNumericCode && b.personalNumericCode) {
+    if (a.personalNumericCode.trim() !== b.personalNumericCode.trim()) {
+      conflicts.push('CNP');
+    }
+  }
+  if (a.givenName && b.givenName) {
+    if (normalizeForMatch(a.givenName) !== normalizeForMatch(b.givenName)) {
+      conflicts.push('prenume');
+    }
+  }
+  if (a.familyName && b.familyName) {
+    if (normalizeForMatch(a.familyName) !== normalizeForMatch(b.familyName)) {
+      conflicts.push('nume');
+    }
+  }
+  if (a.birthdate && b.birthdate) {
+    if (a.birthdate.trim() !== b.birthdate.trim()) {
+      conflicts.push('data nașterii');
+    }
+  }
+  return conflicts;
 }
 
 /**
@@ -99,14 +120,26 @@ export interface EvaluateRulesParams {
   cryptoChecks: TrustCheckItem[];
   acknowledged: boolean;
   requestedScope?: VerificationScope;
+  now?: Date;
+}
+
+function credentialKindLabelRo(kind: 'PID' | 'ADDRESS' | 'INCOME'): string {
+  switch (kind) {
+    case 'PID':
+      return 'actul de identitate';
+    case 'ADDRESS':
+      return 'atestarea de adresă';
+    case 'INCOME':
+      return 'atestarea de venit';
+  }
 }
 
 /**
  * Deterministic ZenBank rules engine:
  * - Never reads claims unless outcome.status === 'SATISFIED'.
- * - Enforces credential cryptographic checks (issuerSignature, holderBinding, validity, trustedIssuer) and expiry.
- * - Verifies cross-credential subject binding (PID <-> Address / Income) and ZenBank customer binding when PID is requested.
- * - Supports dynamic minimal profile scopes ('full', 'address', 'income').
+ * - Enforces credential cryptographic checks (issuerSignature, holderBinding, validity, trustedIssuer) and per-credential expiry.
+ * - Verifies cross-credential subject binding (PID <-> Address / Income, including partial claims and CNP in memory) and ZenBank customer binding.
+ * - Supports dynamic minimal profile scopes ('full', 'address', 'income') and graceful partial recovery when only income expires.
  * - Enforces revocation=NOT_CHECKED policy (no automatic identity field mutation).
  * - Computes structured address & KYC income diffs; never auto-writes without explicit user confirmation.
  */
@@ -116,8 +149,10 @@ export function evaluateVerificationResult({
   cryptoChecks,
   acknowledged,
   requestedScope = 'full',
+  now,
 }: EvaluateRulesParams): BankRuleEvaluation {
   const scope: VerificationScope = requestedScope;
+  const effectiveNow = now ?? new Date();
   const checks: TrustCheckItem[] = [...cryptoChecks];
   const outcomeStatus = payload.outcome?.status ?? 'UNKNOWN';
   const withheldFields = Array.isArray(payload.outcome?.withheld)
@@ -149,6 +184,69 @@ export function evaluateVerificationResult({
     });
 
     const isRefused = outcomeStatus === 'REFUSED';
+    if (!isRefused) {
+      const metadataOnly = parseVerifiedCredentials(payload, effectiveNow);
+      const expiredKinds = Array.from(
+        new Set(
+          metadataOnly.validityIssues
+            .map((v) => v.kind)
+            .filter((k): k is 'PID' | 'ADDRESS' | 'INCOME' => k === 'PID' || k === 'ADDRESS' || k === 'INCOME'),
+        ),
+      );
+      if (expiredKinds.length === 1 && expiredKinds[0] === 'INCOME' && scope === 'full') {
+        checks.push({
+          id: 'income_expiry',
+          label: 'Valabilitate atestare venit',
+          status: 'FAIL',
+          detail: 'Atestarea de venit din EUDI Wallet a expirat.',
+        });
+        return {
+          decision: 'UNHAPPY_PATH',
+          reasonCode: 'INCOME_CREDENTIAL_EXPIRED',
+          message:
+            'Atestarea ta de venit din EUDI Wallet a expirat, însă identitatea și adresa rămân valide. Poți reemite atestarea de venit în wallet sau poți actualiza acum doar adresa de domiciliu.',
+          checks,
+          verifiedIdentity: null,
+          verifiedAddress: null,
+          verifiedIncome: null,
+          addressDiff: null,
+          incomeDiff: null,
+          withheldFields,
+          revocationStatus: 'UNKNOWN',
+          canConfirmAddressUpdate: false,
+          canConfirmIncomeUpdate: false,
+          canConfirmIdentityOnly: false,
+          expiredCredentials: ['INCOME'],
+        };
+      }
+      if (expiredKinds.length > 0) {
+        const labels = expiredKinds.map(credentialKindLabelRo).join(' și ');
+        checks.push({
+          id: 'credential_expiry',
+          label: 'Valabilitate credențiale',
+          status: 'FAIL',
+          detail: `Au expirat: ${labels}.`,
+        });
+        return {
+          decision: 'UNHAPPY_PATH',
+          reasonCode: 'CREDENTIAL_EXPIRED',
+          message: `Următorul document din EUDI Wallet a expirat: ${labels}. Reemite documentul în wallet și reîncearcă verificarea.`,
+          checks,
+          verifiedIdentity: null,
+          verifiedAddress: null,
+          verifiedIncome: null,
+          addressDiff: null,
+          incomeDiff: null,
+          withheldFields,
+          revocationStatus: 'UNKNOWN',
+          canConfirmAddressUpdate: false,
+          canConfirmIncomeUpdate: false,
+          canConfirmIdentityOnly: false,
+          expiredCredentials: expiredKinds,
+        };
+      }
+    }
+
     return {
       decision: 'UNHAPPY_PATH',
       reasonCode: isRefused ? 'PRESENTATION_REFUSED' : 'REQUIREMENT_NOT_SATISFIED',
@@ -176,15 +274,15 @@ export function evaluateVerificationResult({
     detail: 'Rezultat Verifier: outcome.status = SATISFIED.',
   });
 
-  const parsed = parseVerifiedCredentials(payload);
+  const parsed = parseVerifiedCredentials(payload, effectiveNow);
 
-  // Credential integrity check (issuerSignature, holderBinding, validity, trustedIssuer)
-  if (parsed.integrityFailures.length > 0) {
+  // Hard cryptographic integrity check (issuerSignature, holderBinding, trustedIssuer)
+  if (parsed.hardIntegrityFailures.length > 0) {
     checks.push({
       id: 'credential_integrity',
       label: 'Verificări criptografice credențiale',
       status: 'FAIL',
-      detail: `Verificări eșuate: ${parsed.integrityFailures.join(', ')}.`,
+      detail: `Verificări eșuate: ${parsed.hardIntegrityFailures.join(', ')}.`,
     });
     return {
       decision: 'SECURITY_BLOCKED',
@@ -213,25 +311,91 @@ export function evaluateVerificationResult({
       id: 'credential_integrity',
       label: 'Verificări criptografice credențiale',
       status: 'PASS',
-      detail: `Validat issuerSignature=true, holderBinding=true, validity=true, trustedIssuer=true pentru ${parsed.integrityVerifiedCount} credențial(e)${authLabel}.`,
+      detail:
+        parsed.validityIssues.length > 0
+          ? `Validat issuerSignature=true, holderBinding=true, trustedIssuer=true pentru ${parsed.integrityVerifiedCount} credențial(e) valide${authLabel}.`
+          : `Validat issuerSignature=true, holderBinding=true, validity=true, trustedIssuer=true pentru ${parsed.integrityVerifiedCount} credențial(e)${authLabel}.`,
     });
   }
 
-  // PID document expiry check (date_of_expiry)
-  if (parsed.pidExpiryDate && /^\d{4}-\d{2}-\d{2}$/.test(parsed.pidExpiryDate)) {
-    const today = new Date().toISOString().slice(0, 10);
-    if (parsed.pidExpiryDate < today) {
+  // Scenario 1: Cross-credential and customer subject binding runs BEFORE any expiry filtering
+  // so an expired credential belonging to another person still triggers a hard SECURITY_BLOCKED.
+  const revocationStatusEarly =
+    parsed.revocationStatuses.length > 0 ? parsed.revocationStatuses.join(', ') : 'NOT_CHECKED';
+  const customerPartialSubject: PartialIdentitySubject = {
+    givenName: customer.givenName,
+    familyName: customer.familyName,
+    birthdate: customer.birthdate,
+  };
+
+  if (parsed.pidSubject) {
+    const secondarySubjects: Array<{ label: string; subject: PartialIdentitySubject }> = [];
+    if (parsed.addressSubject) {
+      secondarySubjects.push({ label: 'atestarea de adresă', subject: parsed.addressSubject });
+    }
+    if (parsed.incomeSubject) {
+      secondarySubjects.push({ label: 'atestarea de venit', subject: parsed.incomeSubject });
+    }
+
+    for (const sec of secondarySubjects) {
+      const conflicts = findSubjectConflicts(parsed.pidSubject, sec.subject);
+      if (conflicts.length > 0) {
+        checks.push({
+          id: 'cross_credential_binding',
+          label: 'Asociere între credențiale (PID ↔ Adresă / Venit)',
+          status: 'FAIL',
+          detail: `Atributele de identitate (${conflicts.join(', ')}) din PID nu corespund cu titularul pentru ${sec.label}.`,
+        });
+        return {
+          decision: 'SECURITY_BLOCKED',
+          reasonCode: 'CROSS_CREDENTIAL_SUBJECT_MISMATCH',
+          message:
+            'Datele trimise din EUDI Wallet par să aparțină unor persoane diferite, așa că nu putem actualiza profilul.',
+          checks,
+          verifiedIdentity: parsed.pidIdentity,
+          verifiedAddress: null,
+          verifiedIncome: null,
+          addressDiff: null,
+          incomeDiff: null,
+          withheldFields,
+          revocationStatus: revocationStatusEarly,
+          canConfirmAddressUpdate: false,
+          canConfirmIncomeUpdate: false,
+          canConfirmIdentityOnly: false,
+        };
+      }
+    }
+
+    if (secondarySubjects.length > 0) {
       checks.push({
-        id: 'pid_expiry',
-        label: 'Valabilitate document PID',
+        id: 'cross_credential_binding',
+        label: 'Asociere între credențiale (PID ↔ Adresă / Venit)',
+        status: 'PASS',
+        detail: 'Credențialele cu atribute de titular corespund între ele.',
+      });
+    } else {
+      checks.push({
+        id: 'cross_credential_binding',
+        label: 'Asociere între credențiale (PID ↔ Adresă / Venit)',
+        status: 'INFO',
+        detail:
+          'PID, Adresa și Venitul au fost prezentate în aceeași sesiune OpenID4VP cu legare criptografică a deținătorului (holderBinding=true).',
+      });
+    }
+
+    const customerConflicts = findSubjectConflicts(parsed.pidSubject, customerPartialSubject);
+    if (customerConflicts.length > 0) {
+      checks.push({
+        id: 'zenbank_customer_binding',
+        label: 'Asociere identitate client ZenBank',
         status: 'FAIL',
-        detail: `PID-ul prezentat a expirat la ${parsed.pidExpiryDate}.`,
+        detail: `Identitatea verificată în EUDI Wallet nu corespunde cu titularul contului ZenBank (${customerConflicts.join(', ')}).`,
       });
       return {
         decision: 'SECURITY_BLOCKED',
-        reasonCode: 'CREDENTIAL_EXPIRED',
+        reasonCode: 'CUSTOMER_SUBJECT_MISMATCH',
         message:
-          'Documentul tău de identitate din EUDI Wallet este expirat. Te rugăm să îl reînnoiești înainte de a actualiza profilul ZenBank.',
+          'Identitatea din EUDI Wallet nu corespunde titularului acestui cont ZenBank. Pentru siguranța ta, actualizarea a fost blocată.',
         checks,
         verifiedIdentity: parsed.pidIdentity,
         verifiedAddress: null,
@@ -239,18 +403,211 @@ export function evaluateVerificationResult({
         addressDiff: null,
         incomeDiff: null,
         withheldFields,
-        revocationStatus: parsed.revocationStatuses.join(', ') || 'NOT_CHECKED',
+        revocationStatus: revocationStatusEarly,
         canConfirmAddressUpdate: false,
         canConfirmIncomeUpdate: false,
         canConfirmIdentityOnly: false,
       };
     }
+
+    checks.push({
+      id: 'zenbank_customer_binding',
+      label: 'Asociere identitate client ZenBank',
+      status: 'PASS',
+      detail: 'Identitatea verificată în EUDI corespunde cu clientul ZenBank autentificat (nume + dată naștere).',
+    });
+  } else {
+    if (parsed.addressSubject && parsed.incomeSubject) {
+      const secondaryConflicts = findSubjectConflicts(parsed.addressSubject, parsed.incomeSubject);
+      if (secondaryConflicts.length > 0) {
+        checks.push({
+          id: 'cross_credential_binding',
+          label: 'Asociere între credențiale (Adresă ↔ Venit)',
+          status: 'FAIL',
+          detail: `Atributele de identitate (${secondaryConflicts.join(', ')}) nu corespund între atestarea de adresă și atestarea de venit.`,
+        });
+        return {
+          decision: 'SECURITY_BLOCKED',
+          reasonCode: 'CROSS_CREDENTIAL_SUBJECT_MISMATCH',
+          message:
+            'Datele trimise din EUDI Wallet par să aparțină unor persoane diferite, așa că nu putem actualiza profilul.',
+          checks,
+          verifiedIdentity: parsed.pidIdentity,
+          verifiedAddress: null,
+          verifiedIncome: null,
+          addressDiff: null,
+          incomeDiff: null,
+          withheldFields,
+          revocationStatus: revocationStatusEarly,
+          canConfirmAddressUpdate: false,
+          canConfirmIncomeUpdate: false,
+          canConfirmIdentityOnly: false,
+        };
+      }
+    }
+
+    const secondaryEntries: Array<{ label: string; subject: PartialIdentitySubject }> = [];
+    if (parsed.addressSubject) {
+      secondaryEntries.push({ label: 'atestarea de adresă', subject: parsed.addressSubject });
+    }
+    if (parsed.incomeSubject) {
+      secondaryEntries.push({ label: 'atestarea de venit', subject: parsed.incomeSubject });
+    }
+    for (const entry of secondaryEntries) {
+      const conflicts = findSubjectConflicts(entry.subject, customerPartialSubject);
+      if (conflicts.length > 0) {
+        checks.push({
+          id: 'zenbank_customer_binding',
+          label: 'Asociere identitate client ZenBank',
+          status: 'FAIL',
+          detail: `Titularul pentru ${entry.label} nu corespunde cu clientul ZenBank (${conflicts.join(', ')}).`,
+        });
+        return {
+          decision: 'SECURITY_BLOCKED',
+          reasonCode: 'CUSTOMER_SUBJECT_MISMATCH',
+          message:
+            'Identitatea din EUDI Wallet nu corespunde titularului acestui cont ZenBank. Pentru siguranța ta, actualizarea a fost blocată.',
+          checks,
+          verifiedIdentity: parsed.pidIdentity,
+          verifiedAddress: null,
+          verifiedIncome: null,
+          addressDiff: null,
+          incomeDiff: null,
+          withheldFields,
+          revocationStatus: revocationStatusEarly,
+          canConfirmAddressUpdate: false,
+          canConfirmIncomeUpdate: false,
+          canConfirmIdentityOnly: false,
+        };
+      }
+    }
+  }
+
+  // Scenario 2: Per-credential validity & expiry evaluation
+  const pidIssue = parsed.validityIssues.find((v) => v.kind === 'PID');
+  const addressIssue = parsed.validityIssues.find((v) => v.kind === 'ADDRESS');
+  const incomeIssue = parsed.validityIssues.find((v) => v.kind === 'INCOME');
+  const otherIssue = parsed.validityIssues.find((v) => v.kind === 'OTHER');
+
+  if (otherIssue) {
+    checks.push({
+      id: 'credential_expiry',
+      label: 'Valabilitate credențiale',
+      status: 'FAIL',
+      detail: `Credențial expirat sau nevalid: ${otherIssue.label}.`,
+    });
+    return {
+      decision: 'SECURITY_BLOCKED',
+      reasonCode: 'CREDENTIAL_EXPIRED',
+      message:
+        'Unul dintre documentele prezentate din EUDI Wallet este expirat. Te rugăm să îl reînnoiești înainte de a actualiza profilul ZenBank.',
+      checks,
+      verifiedIdentity: parsed.pidIdentity,
+      verifiedAddress: null,
+      verifiedIncome: null,
+      addressDiff: null,
+      incomeDiff: null,
+      withheldFields,
+      revocationStatus: revocationStatusEarly,
+      canConfirmAddressUpdate: false,
+      canConfirmIncomeUpdate: false,
+      canConfirmIdentityOnly: false,
+    };
+  }
+
+  if (pidIssue) {
+    checks.push({
+      id: 'pid_expiry',
+      label: 'Valabilitate document PID',
+      status: 'FAIL',
+      detail: parsed.pidExpiryDate
+        ? `PID-ul prezentat a expirat la ${parsed.pidExpiryDate}.`
+        : 'Documentul de identitate (PID) din EUDI Wallet a expirat.',
+    });
+    return {
+      decision: 'SECURITY_BLOCKED',
+      reasonCode: 'CREDENTIAL_EXPIRED',
+      message:
+        'Documentul tău de identitate din EUDI Wallet este expirat. Te rugăm să îl reînnoiești înainte de a actualiza profilul ZenBank.',
+      checks,
+      verifiedIdentity: parsed.pidIdentity,
+      verifiedAddress: null,
+      verifiedIncome: null,
+      addressDiff: null,
+      incomeDiff: null,
+      withheldFields,
+      revocationStatus: revocationStatusEarly,
+      canConfirmAddressUpdate: false,
+      canConfirmIncomeUpdate: false,
+      canConfirmIdentityOnly: false,
+      expiredCredentials: ['PID'],
+    };
+  }
+  if (parsed.pidExpiryDate && /^\d{4}-\d{2}-\d{2}$/.test(parsed.pidExpiryDate)) {
     checks.push({
       id: 'pid_expiry',
       label: 'Valabilitate document PID',
       status: 'PASS',
       detail: `Data de expirare PID (${parsed.pidExpiryDate}) este validă.`,
     });
+  }
+
+  const expiredCredentials: Array<'PID' | 'ADDRESS' | 'INCOME'> = [];
+  let warningNote: string | undefined;
+
+  if (
+    (scope === 'address' && addressIssue) ||
+    (scope === 'income' && incomeIssue) ||
+    (addressIssue && incomeIssue)
+  ) {
+    if (addressIssue) expiredCredentials.push('ADDRESS');
+    if (incomeIssue) expiredCredentials.push('INCOME');
+    const labels = expiredCredentials.map(credentialKindLabelRo).join(' și ');
+    checks.push({
+      id: 'credential_expiry',
+      label: 'Valabilitate credențiale',
+      status: 'FAIL',
+      detail: `Au expirat: ${labels}.`,
+    });
+    return {
+      decision: 'SECURITY_BLOCKED',
+      reasonCode: 'CREDENTIAL_EXPIRED',
+      message: `Documentul prezentat din EUDI Wallet (${labels}) este expirat. Reemite documentul în wallet și reîncearcă verificarea.`,
+      checks,
+      verifiedIdentity: parsed.pidIdentity,
+      verifiedAddress: null,
+      verifiedIncome: null,
+      addressDiff: null,
+      incomeDiff: null,
+      withheldFields,
+      revocationStatus: revocationStatusEarly,
+      canConfirmAddressUpdate: false,
+      canConfirmIncomeUpdate: false,
+      canConfirmIdentityOnly: false,
+      expiredCredentials,
+    };
+  }
+
+  if (scope === 'full' && incomeIssue) {
+    expiredCredentials.push('INCOME');
+    checks.push({
+      id: 'income_expiry',
+      label: 'Valabilitate atestare venit',
+      status: 'FAIL',
+      detail: 'Atestarea de venit a expirat și a fost exclusă; identitatea și adresa rămân valide.',
+    });
+    warningNote =
+      'Atestarea ta de venit din EUDI Wallet a expirat și nu a fost inclusă. Poți confirma acum actualizarea adresei și reconfirmarea identității, apoi poți actualiza venitul după reemiterea documentului în wallet.';
+  } else if (scope === 'full' && addressIssue) {
+    expiredCredentials.push('ADDRESS');
+    checks.push({
+      id: 'address_expiry',
+      label: 'Valabilitate atestare adresă',
+      status: 'FAIL',
+      detail: 'Atestarea de adresă a expirat și a fost exclusă; identitatea și venitul rămân valide.',
+    });
+    warningNote =
+      'Atestarea ta de adresă din EUDI Wallet a expirat și nu a fost inclusă. Poți confirma acum actualizarea venitului și reconfirmarea identității, apoi poți actualiza adresa după reemiterea documentului în wallet.';
   }
 
   if (parsed.ignoredPidFields.length > 0 || parsed.ignoredRawFields.length > 0) {
@@ -386,100 +743,7 @@ export function evaluateVerificationResult({
     }
   }
 
-  if (parsed.pidIdentity) {
-    // Cross-credential subject association check (PID <-> Address & Income)
-    const secondarySubjects: Array<{ label: string; subject: IdentitySubject }> = [];
-    if (parsed.addressIdentity) {
-      secondarySubjects.push({ label: 'atestarea de adresă', subject: parsed.addressIdentity });
-    }
-    if (parsed.incomeIdentity) {
-      secondarySubjects.push({ label: 'atestarea de venit', subject: parsed.incomeIdentity });
-    }
-
-    for (const sec of secondarySubjects) {
-      if (!subjectsMatch(parsed.pidIdentity, sec.subject)) {
-        checks.push({
-          id: 'cross_credential_binding',
-          label: 'Asociere între credențiale (PID ↔ Adresă / Venit)',
-          status: 'FAIL',
-          detail: `Atributele de identitate din PID nu corespund cu titularul pentru ${sec.label}.`,
-        });
-        return {
-          decision: 'SECURITY_BLOCKED',
-          reasonCode: 'CROSS_CREDENTIAL_SUBJECT_MISMATCH',
-          message:
-            'Datele trimise din EUDI Wallet par să aparțină unor persoane diferite, așa că nu putem actualiza profilul.',
-          checks,
-          verifiedIdentity: parsed.pidIdentity,
-          verifiedAddress: null,
-          verifiedIncome: null,
-          addressDiff: null,
-          incomeDiff: null,
-          withheldFields,
-          revocationStatus,
-          canConfirmAddressUpdate: false,
-          canConfirmIncomeUpdate: false,
-          canConfirmIdentityOnly: false,
-        };
-      }
-    }
-
-    if (secondarySubjects.length > 0) {
-      checks.push({
-        id: 'cross_credential_binding',
-        label: 'Asociere între credențiale (PID ↔ Adresă / Venit)',
-        status: 'PASS',
-        detail: 'Credențialele cu atribute de titular au același nume, prenume și dată a nașterii.',
-      });
-    } else {
-      checks.push({
-        id: 'cross_credential_binding',
-        label: 'Asociere între credențiale (PID ↔ Adresă / Venit)',
-        status: 'INFO',
-        detail:
-          'PID, Adresa și Venitul au fost prezentate în aceeași sesiune OpenID4VP cu legare criptografică a deținătorului (holderBinding=true).',
-      });
-    }
-
-    // Customer record binding check
-    const customerSubject: IdentitySubject = {
-      givenName: customer.givenName,
-      familyName: customer.familyName,
-      birthdate: customer.birthdate,
-    };
-    if (!subjectsMatch(parsed.pidIdentity, customerSubject)) {
-      checks.push({
-        id: 'zenbank_customer_binding',
-        label: 'Asociere identitate client ZenBank',
-        status: 'FAIL',
-        detail: 'Identitatea verificată în EUDI Wallet nu corespunde cu titularul contului ZenBank.',
-      });
-      return {
-        decision: 'SECURITY_BLOCKED',
-        reasonCode: 'CUSTOMER_SUBJECT_MISMATCH',
-        message:
-          'Identitatea din EUDI Wallet nu corespunde titularului acestui cont ZenBank. Pentru siguranța ta, actualizarea a fost blocată.',
-        checks,
-        verifiedIdentity: parsed.pidIdentity,
-        verifiedAddress: null,
-        verifiedIncome: null,
-        addressDiff: null,
-        incomeDiff: null,
-        withheldFields,
-        revocationStatus,
-        canConfirmAddressUpdate: false,
-        canConfirmIncomeUpdate: false,
-        canConfirmIdentityOnly: false,
-      };
-    }
-
-    checks.push({
-      id: 'zenbank_customer_binding',
-      label: 'Asociere identitate client ZenBank',
-      status: 'PASS',
-      detail: 'Identitatea verificată în EUDI corespunde cu clientul ZenBank autentificat (nume + dată naștere).',
-    });
-  } else if (scope === 'full') {
+  if (!parsed.pidSubject && scope === 'full') {
     checks.push({
       id: 'zenbank_customer_binding',
       label: 'Asociere identitate client ZenBank',
@@ -489,29 +753,31 @@ export function evaluateVerificationResult({
     });
   }
 
+  // Exclude expired optional credential in full scope so expired claims are never read/offered
+  let effectiveAddress: StructuredAddress | null = addressIssue ? null : parsed.verifiedAddress;
   // When qa-income-23 omits payer.legal_name / income_type, preserve existing employer/source while updating bracket
-  let effectiveIncome: KycIncomeProfile | null = parsed.verifiedIncome;
-  if (scope === 'income' && parsed.verifiedIncome) {
+  let effectiveIncome: KycIncomeProfile | null = incomeIssue ? null : parsed.verifiedIncome;
+  if (scope === 'income' && effectiveIncome) {
     const preserveEmployer =
-      !parsed.verifiedIncome.employer || parsed.verifiedIncome.employer === 'Neconfirmat';
-    const preserveSource = parsed.verifiedIncome.source === 'Venit declarat';
+      !effectiveIncome.employer || effectiveIncome.employer === 'Neconfirmat';
+    const preserveSource = effectiveIncome.source === 'Venit declarat';
     effectiveIncome = {
-      ...parsed.verifiedIncome,
-      employer: preserveEmployer ? customer.currentIncome.employer : parsed.verifiedIncome.employer,
-      source: preserveSource ? customer.currentIncome.source : parsed.verifiedIncome.source,
+      ...effectiveIncome,
+      employer: preserveEmployer ? customer.currentIncome.employer : effectiveIncome.employer,
+      source: preserveSource ? customer.currentIncome.source : effectiveIncome.source,
     };
   }
 
   // Evaluate address & income disclosures independently according to the requested minimal scope
-  const expectAddress = scope !== 'income';
-  const expectIncome = scope !== 'address';
+  const expectAddress = scope !== 'income' && !addressIssue;
+  const expectIncome = scope !== 'address' && !incomeIssue;
   const canConfirmIdentityOnly = Boolean(parsed.pidIdentity);
 
   const addressWithheld =
     expectAddress &&
     (withheldFields.some((f) => f.toLowerCase().includes('address') || f.toLowerCase().includes('street')) ||
-      !parsed.verifiedAddress ||
-      (!parsed.verifiedAddress.streetAddress && !parsed.verifiedAddress.formatted));
+      !effectiveAddress ||
+      (!effectiveAddress.streetAddress && !effectiveAddress.formatted));
 
   const incomeWithheld =
     expectIncome &&
@@ -544,12 +810,15 @@ export function evaluateVerificationResult({
       canConfirmAddressUpdate: false,
       canConfirmIncomeUpdate: false,
       canConfirmIdentityOnly: true,
+      ...(expiredCredentials.length > 0 ? { expiredCredentials } : {}),
+      credentialValidUntil: parsed.credentialValidUntil,
+      ...(warningNote ? { warningNote } : {}),
     };
   }
 
   const addressDiff =
-    expectAddress && !addressWithheld && parsed.verifiedAddress
-      ? computeAddressDiff(customer.currentAddress, parsed.verifiedAddress)
+    expectAddress && !addressWithheld && effectiveAddress
+      ? computeAddressDiff(customer.currentAddress, effectiveAddress)
       : null;
   const incomeDiff =
     expectIncome && !incomeWithheld && effectiveIncome
@@ -559,7 +828,15 @@ export function evaluateVerificationResult({
   const hasAddressChanges = Boolean(addressDiff?.hasChanges);
   const hasIncomeChanges = Boolean(incomeDiff?.hasChanges);
 
-  if (addressWithheld || incomeWithheld) {
+  if (expiredCredentials.length > 0) {
+    const expiredLabel = expiredCredentials.map(credentialKindLabelRo).join(' și ');
+    checks.push({
+      id: 'profile_comparison',
+      label: 'Comparație date solicitate',
+      status: 'WARN',
+      detail: `Exclus din actualizare (${expiredLabel} expirat); datele valide rămase sunt pregătite pentru confirmare.`,
+    });
+  } else if (addressWithheld || incomeWithheld) {
     const missingLabel = addressWithheld ? 'adresa' : 'atestarea de venit';
     checks.push({
       id: 'profile_comparison',
@@ -615,7 +892,7 @@ export function evaluateVerificationResult({
       message: readyMessage,
       checks,
       verifiedIdentity: parsed.pidIdentity,
-      verifiedAddress: expectAddress && !addressWithheld ? parsed.verifiedAddress : null,
+      verifiedAddress: expectAddress && !addressWithheld ? effectiveAddress : null,
       verifiedIncome: expectIncome && !incomeWithheld ? effectiveIncome : null,
       addressDiff,
       incomeDiff,
@@ -624,6 +901,9 @@ export function evaluateVerificationResult({
       canConfirmAddressUpdate: hasAddressChanges,
       canConfirmIncomeUpdate: hasIncomeChanges,
       canConfirmIdentityOnly,
+      ...(expiredCredentials.length > 0 ? { expiredCredentials } : {}),
+      credentialValidUntil: parsed.credentialValidUntil,
+      ...(warningNote ? { warningNote } : {}),
     };
   }
 
@@ -637,7 +917,7 @@ export function evaluateVerificationResult({
         : 'Datele tale de venit din EUDI Wallet corespund deja cu profilul curent ZenBank.',
     checks,
     verifiedIdentity: parsed.pidIdentity,
-    verifiedAddress: expectAddress && !addressWithheld ? parsed.verifiedAddress : null,
+    verifiedAddress: expectAddress && !addressWithheld ? effectiveAddress : null,
     verifiedIncome: expectIncome && !incomeWithheld ? effectiveIncome : null,
     addressDiff,
     incomeDiff,
@@ -646,5 +926,8 @@ export function evaluateVerificationResult({
     canConfirmAddressUpdate: false,
     canConfirmIncomeUpdate: false,
     canConfirmIdentityOnly,
+    ...(expiredCredentials.length > 0 ? { expiredCredentials } : {}),
+    credentialValidUntil: parsed.credentialValidUntil,
+    ...(warningNote ? { warningNote } : {}),
   };
 }

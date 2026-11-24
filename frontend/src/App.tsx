@@ -354,6 +354,7 @@ export function App() {
               activeTransactionId={activeTxId}
               confirmedIds={confirmedIds}
               profileFlowOpen={profileFlowOpen}
+              isAndroidWrapper={isAndroidWrapper}
               loading={loading}
               onStartProfileUpdate={(scope?: VerificationScope) => {
                 void runAction(async () => {
@@ -366,8 +367,13 @@ export function App() {
               onResumeProfileFlow={() => setProfileFlowOpen(true)}
               onStartVerification={() => void runAction(() => api.startVerification(launchMode))}
               onConfirmUpdate={(pendingUpdateId, mode) => {
-                setConfirmedIds((prev) => new Set(prev).add(pendingUpdateId));
-                void runAction(() => api.confirmUpdate(pendingUpdateId, mode));
+                void runAction(async () => {
+                  const next = await api.confirmUpdate(pendingUpdateId, mode);
+                  if (next.stage !== 'DIFF_READY') {
+                    setConfirmedIds((prev) => new Set(prev).add(pendingUpdateId));
+                  }
+                  return next;
+                });
               }}
               onRetryVerification={() => void runAction(() => api.startVerification(launchMode))}
               onOpenChat={() => {
@@ -385,14 +391,20 @@ export function App() {
               loading={loading}
               activeTransactionId={activeTxId}
               confirmedIds={confirmedIds}
+              isAndroidWrapper={isAndroidWrapper}
               onSendChat={(message, quickAction, scope) => {
                 setProfileFlowOpen(false);
                 void runAction(() => api.sendChat(message, quickAction, scope));
               }}
               onStartVerification={() => void runAction(() => api.startVerification(launchMode))}
               onConfirmUpdate={(pendingUpdateId, mode) => {
-                setConfirmedIds((prev) => new Set(prev).add(pendingUpdateId));
-                void runAction(() => api.confirmUpdate(pendingUpdateId, mode));
+                void runAction(async () => {
+                  const next = await api.confirmUpdate(pendingUpdateId, mode);
+                  if (next.stage !== 'DIFF_READY') {
+                    setConfirmedIds((prev) => new Set(prev).add(pendingUpdateId));
+                  }
+                  return next;
+                });
               }}
               onRetryVerification={() => void runAction(() => api.startVerification(launchMode))}
               onGoHome={() => {
