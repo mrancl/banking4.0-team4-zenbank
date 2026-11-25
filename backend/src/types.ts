@@ -1,7 +1,7 @@
 export type CustomerId = 'radu' | 'alex' | 'maria';
 export type DemoScenario = 'data_update' | 'payment_restricted';
 export type KycStatus = 'RECONFIRMATION_NEEDED' | 'INCOMPLETE_UPDATE' | 'UP_TO_DATE';
-export type VerificationScope = 'full' | 'address' | 'income';
+export type VerificationScope = 'full' | 'address' | 'income' | 'age';
 export type VerificationLaunchMode = 'cross_device' | 'same_device_native' | 'same_device_web';
 export type Language = 'ro';
 
@@ -133,6 +133,7 @@ export type RuleDecision =
   | 'READY_FOR_CONFIRMATION'
   | 'NO_CHANGES_CONFIRM_IDENTITY'
   | 'PARTIAL_IDENTITY_ONLY'
+  | 'AGE_DECISION_SATISFIED'
   | 'SECURITY_BLOCKED'
   | 'UNHAPPY_PATH';
 
@@ -154,6 +155,8 @@ export interface BankRuleEvaluation {
   expiredCredentials?: Array<'PID' | 'ADDRESS' | 'INCOME'>;
   credentialValidUntil?: { pid?: string; address?: string; income?: string };
   warningNote?: string;
+  decisionAnswers?: Record<string, string>;
+  decisionBasis?: string;
 }
 
 export type AgentStage =
@@ -175,7 +178,7 @@ export interface ZeroPiiAgentContext {
   restrictionCode: 'NONE' | 'KYC_UPDATE_INCOMPLETE';
   dataUpdateRequired: boolean;
   missingItems: string[];
-  requestedCredentials: Array<'PID' | 'ADDRESS' | 'INCOME'>;
+  requestedCredentials: Array<'PID' | 'ADDRESS' | 'INCOME' | 'AGE_18'>;
   selectedScope?: VerificationScope;
   selectedProfileCode?: string;
   verificationSummary?: {
@@ -237,6 +240,8 @@ export type ChatCard =
       type: 'completed';
       scope?: VerificationScope;
       profileCode?: string;
+      ageVerified?: boolean;
+      decisionBasis?: string;
       identityReconfirmed: boolean;
       addressUpdated: boolean;
       incomeUpdated: boolean;

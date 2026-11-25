@@ -106,6 +106,8 @@ function nowIso(): string {
 
 export function resolveProfileCode(scope: VerificationScope, defaultFullCode: string): string {
   switch (scope) {
+    case 'age':
+      return 'age-18';
     case 'address':
       return 'qa-address-23';
     case 'income':
@@ -117,6 +119,28 @@ export function resolveProfileCode(scope: VerificationScope, defaultFullCode: st
 }
 
 function buildPreConsentCard(scope: VerificationScope, profileCode: string): ChatCard {
+  if (scope === 'age') {
+    return {
+      type: 'pre_consent',
+      scope,
+      profileCode,
+      purpose: 'Decizie 18+ · 0 PII',
+      requestedCredentials: [
+        {
+          credential: 'Confirmare vârstă (18+)',
+          vct: 'urn:banking40:sandbox:pid-ro:1',
+          attributes: ['Doar confirmare 18+ (Da / Nu)'],
+          why: 'Confirmă că ai cel puțin 18 ani fără a partaja numele, CNP-ul sau data nașterii.',
+        },
+      ],
+      excludedItems: [
+        'Nu solicităm numele, prenumele, CNP-ul sau data nașterii exactă',
+        'Nu solicităm adresa de domiciliu sau datele de venit',
+        'Nu încarci poze cu actul de identitate',
+      ],
+    };
+  }
+
   const pidCred = {
     credential: 'Identitatea ta',
     vct: 'urn:banking40:sandbox:pid-ro:1',
@@ -638,16 +662,20 @@ export class JourneyOrchestrator {
 
     if (session.flowChannel !== 'profile') {
       const text = sameDevice
-        ? scope === 'address'
-          ? 'Apasă butonul Deschide în EUDI Wallet de mai jos și aprobă partajarea atestării de adresă.'
-          : scope === 'income'
-            ? 'Apasă butonul Deschide în EUDI Wallet de mai jos și aprobă partajarea atestării de venit.'
-            : 'Apasă butonul Deschide în EUDI Wallet de mai jos și aprobă partajarea datelor tale de identitate, adresă și venit.'
-        : scope === 'address'
-          ? 'Scanează codul QR de mai jos cu aplicația EUDI Wallet (sau apasă Deschide în EUDI Wallet) și aprobă partajarea atestării de adresă.'
-          : scope === 'income'
-            ? 'Scanează codul QR de mai jos cu aplicația EUDI Wallet (sau apasă Deschide în EUDI Wallet) și aprobă partajarea atestării de venit.'
-            : 'Scanează codul QR de mai jos cu aplicația EUDI Wallet și aprobă partajarea datelor tale de identitate, adresă și venit.';
+        ? scope === 'age'
+          ? 'Apasă butonul Deschide în EUDI Wallet de mai jos și aprobă confirmarea 18+ (fără a partaja date personale).'
+          : scope === 'address'
+            ? 'Apasă butonul Deschide în EUDI Wallet de mai jos și aprobă partajarea atestării de adresă.'
+            : scope === 'income'
+              ? 'Apasă butonul Deschide în EUDI Wallet de mai jos și aprobă partajarea atestării de venit.'
+              : 'Apasă butonul Deschide în EUDI Wallet de mai jos și aprobă partajarea datelor tale de identitate, adresă și venit.'
+        : scope === 'age'
+          ? 'Scanează codul QR de mai jos cu aplicația EUDI Wallet (sau apasă Deschide în EUDI Wallet) și aprobă confirmarea 18+ fără a partaja date personale.'
+          : scope === 'address'
+            ? 'Scanează codul QR de mai jos cu aplicația EUDI Wallet (sau apasă Deschide în EUDI Wallet) și aprobă partajarea atestării de adresă.'
+            : scope === 'income'
+              ? 'Scanează codul QR de mai jos cu aplicația EUDI Wallet (sau apasă Deschide în EUDI Wallet) și aprobă partajarea atestării de venit.'
+              : 'Scanează codul QR de mai jos cu aplicația EUDI Wallet și aprobă partajarea datelor tale de identitate, adresă și venit.';
       this.addMessage(session, 'agent', text, card);
     }
 
@@ -690,6 +718,20 @@ export class JourneyOrchestrator {
       statusResp.status === 'REQUEST_RETRIEVED' ||
       statusResp.status === 'RESPONSE_CODE_REQUIRED'
     ) {
+      return this.getPublicState(sessionId);
+    }
+
+    if (statusResp.status === 'APPROVED' && session.activeVerification.scope === 'age') {
+      const txScope = session.activeVerification.scope;
+      const txProfileCode = session.activeVerification.profileCode;
+      this.applyEvaluationToSession(
+        session,
+        transactionId,
+        this.buildDirectAgeDecisionEvaluation(statusResp.outcome ?? undefined),
+        false,
+        txScope,
+        txProfileCode,
+      );
       return this.getPublicState(sessionId);
     }
 
@@ -812,6 +854,20 @@ export class JourneyOrchestrator {
         return this.getPublicState(sessionId);
       }
 
+      if (claimed.status === 'APPROVED' && session.activeVerification?.scope === 'age') {
+        const txScope = session.activeVerification.scope;
+        const txProfileCode = session.activeVerification.profileCode;
+        this.applyEvaluationToSession(
+          session,
+          txId,
+          this.buildDirectAgeDecisionEvaluation(claimed.outcome ?? undefined),
+          false,
+          txScope,
+          txProfileCode,
+        );
+        return this.getPublicState(sessionId);
+      }
+
       if (claimed.status !== 'COMPLETED') {
         this.handleTerminalErrorStatus(
           session,
@@ -913,6 +969,41 @@ export class JourneyOrchestrator {
     return this.getPublicState(session.sessionId);
   }
 
+  private buildDirectAgeDecisionEvaluation(basis?: string): BankRuleEvaluation {
+    return {
+      decision: 'AGE_DECISION_SATISFIED',
+      reasonCode: 'AGE_OVER_18_CONFIRMED',
+      message:
+        'Eligibilitatea 18+ a fost confirmată prin EUDI Wallet — fără a partaja numele, data nașterii sau alte date personale.',
+      checks: [
+        {
+          id: 'outcome_status',
+          label: 'Rezultat verificare Verifier',
+          status: 'PASS',
+          detail: 'Rezultat Verifier: status = APPROVED (DECISION age-18).',
+        },
+        {
+          id: 'age_decision',
+          label: 'Decizie eligibilitate 18+ (0 PII)',
+          status: 'PASS',
+          detail: 'Rezultat DECISION (age-18): age_over_18=true; fără date personale dezvăluite.',
+        },
+      ],
+      verifiedIdentity: null,
+      verifiedAddress: null,
+      verifiedIncome: null,
+      addressDiff: null,
+      incomeDiff: null,
+      withheldFields: [],
+      revocationStatus: 'NOT_CHECKED',
+      canConfirmAddressUpdate: false,
+      canConfirmIncomeUpdate: false,
+      canConfirmIdentityOnly: false,
+      decisionAnswers: { age_over_18: 'true' },
+      decisionBasis: basis ?? 'ATTESTATION',
+    };
+  }
+
   private applyEvaluationToSession(
     session: SessionInternal,
     transactionId: string,
@@ -1010,6 +1101,34 @@ export class JourneyOrchestrator {
         if (session.flowChannel !== 'profile') {
           this.addMessage(session, 'agent', promptText, card);
         }
+      }
+    } else if (evaluation.decision === 'AGE_DECISION_SATISFIED') {
+      session.pendingUpdate = null;
+      session.stage = 'COMPLETED';
+      this.addAudit(
+        session,
+        simulated ? 'SIMULATION' : 'RULES',
+        'AGE_DECISION_CONFIRMED',
+        `Eligibilitate 18+ confirmată prin EUDI Wallet (profile=${profileCode}, basis=${evaluation.decisionBasis ?? 'ATTESTATION'}, 0 PII partajat; profilul ZenBank neschimbat).`,
+      );
+      const card: ChatCard = {
+        type: 'completed',
+        scope: 'age',
+        profileCode,
+        ageVerified: true,
+        decisionBasis: evaluation.decisionBasis ?? 'ATTESTATION',
+        identityReconfirmed: false,
+        addressUpdated: false,
+        incomeUpdated: false,
+        restrictionLifted: false,
+        noDocumentUploadRequired: true,
+        updatedAddress: { ...session.customer.currentAddress },
+        updatedIncome: { ...session.customer.currentIncome },
+        completedAt: nowIso(),
+      };
+      session.activeFlowCard = card;
+      if (session.flowChannel !== 'profile') {
+        this.addMessage(session, 'agent', evaluation.message, card);
       }
     } else if (evaluation.decision === 'SECURITY_BLOCKED') {
       session.pendingUpdate = null;

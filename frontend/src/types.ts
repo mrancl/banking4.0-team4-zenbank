@@ -1,7 +1,7 @@
 export type CustomerId = 'radu' | 'alex' | 'maria';
 export type DemoScenario = 'data_update' | 'payment_restricted';
 export type KycStatus = 'RECONFIRMATION_NEEDED' | 'INCOMPLETE_UPDATE' | 'UP_TO_DATE';
-export type VerificationScope = 'full' | 'address' | 'income';
+export type VerificationScope = 'full' | 'address' | 'income' | 'age';
 export type VerificationLaunchMode = 'cross_device' | 'same_device_native' | 'same_device_web';
 export type AgentStage =
   | 'IDLE'
@@ -131,6 +131,8 @@ export type ChatCard =
       type: 'completed';
       scope?: VerificationScope;
       profileCode?: string;
+      ageVerified?: boolean;
+      decisionBasis?: string;
       identityReconfirmed: boolean;
       addressUpdated: boolean;
       incomeUpdated: boolean;
@@ -196,7 +198,7 @@ export interface ZeroPiiAgentContext {
   restrictionCode: 'NONE' | 'KYC_UPDATE_INCOMPLETE';
   dataUpdateRequired: boolean;
   missingItems: string[];
-  requestedCredentials: Array<'PID' | 'ADDRESS' | 'INCOME'>;
+  requestedCredentials: Array<'PID' | 'ADDRESS' | 'INCOME' | 'AGE_18'>;
   selectedScope?: VerificationScope;
   selectedProfileCode?: string;
   verificationSummary?: {

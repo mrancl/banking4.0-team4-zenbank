@@ -175,6 +175,155 @@ export function evaluateVerificationResult({
     });
   }
 
+  if (scope === 'age') {
+    if (outcomeStatus !== 'SATISFIED') {
+      checks.push({
+        id: 'outcome_status',
+        label: 'Rezultat verificare Verifier',
+        status: 'FAIL',
+        detail: `Statusul returnat a fost ${outcomeStatus} (fără date personale dezvăluite).`,
+      });
+      const isRefused = outcomeStatus === 'REFUSED';
+      return {
+        decision: 'UNHAPPY_PATH',
+        reasonCode: isRefused ? 'PRESENTATION_REFUSED' : 'AGE_REQUIREMENT_NOT_SATISFIED',
+        message: isRefused
+          ? 'Ai ales să nu partajezi verificarea de vârstă în EUDI Wallet. Profilul tău ZenBank a rămas neschimbat.'
+          : 'Nu am putut confirma eligibilitatea 18+ din EUDI Wallet. Profilul tău ZenBank a rămas neschimbat.',
+        checks,
+        verifiedIdentity: null,
+        verifiedAddress: null,
+        verifiedIncome: null,
+        addressDiff: null,
+        incomeDiff: null,
+        withheldFields,
+        revocationStatus: 'UNKNOWN',
+        canConfirmAddressUpdate: false,
+        canConfirmIncomeUpdate: false,
+        canConfirmIdentityOnly: false,
+      };
+    }
+
+    checks.push({
+      id: 'outcome_status',
+      label: 'Rezultat verificare Verifier',
+      status: 'PASS',
+      detail: 'Rezultat Verifier: outcome.status = SATISFIED (DECISION age-18).',
+    });
+
+    if (Array.isArray(payload.credentials) && payload.credentials.length > 0) {
+      const parsedAge = parseVerifiedCredentials(payload, effectiveNow);
+      if (parsedAge.hardIntegrityFailures.length > 0) {
+        checks.push({
+          id: 'credential_integrity',
+          label: 'Verificări criptografice credențiale',
+          status: 'FAIL',
+          detail: `Verificări eșuate: ${parsedAge.hardIntegrityFailures.join(', ')}.`,
+        });
+        return {
+          decision: 'SECURITY_BLOCKED',
+          reasonCode: 'CREDENTIAL_INTEGRITY_FAILED',
+          message:
+            'Nu am putut confirma autenticitatea datelor din EUDI Wallet. Din motive de siguranță, verificarea a fost oprită.',
+          checks,
+          verifiedIdentity: null,
+          verifiedAddress: null,
+          verifiedIncome: null,
+          addressDiff: null,
+          incomeDiff: null,
+          withheldFields,
+          revocationStatus: parsedAge.revocationStatuses.join(', ') || 'NOT_CHECKED',
+          canConfirmAddressUpdate: false,
+          canConfirmIncomeUpdate: false,
+          canConfirmIdentityOnly: false,
+        };
+      }
+      if (parsedAge.validityIssues.length > 0) {
+        checks.push({
+          id: 'credential_expiry',
+          label: 'Valabilitate credențiale',
+          status: 'FAIL',
+          detail: 'Documentul folosit pentru verificarea de vârstă a expirat.',
+        });
+        return {
+          decision: 'SECURITY_BLOCKED',
+          reasonCode: 'CREDENTIAL_EXPIRED',
+          message:
+            'Documentul din EUDI Wallet folosit pentru verificarea de vârstă este expirat.',
+          checks,
+          verifiedIdentity: null,
+          verifiedAddress: null,
+          verifiedIncome: null,
+          addressDiff: null,
+          incomeDiff: null,
+          withheldFields,
+          revocationStatus: parsedAge.revocationStatuses.join(', ') || 'NOT_CHECKED',
+          canConfirmAddressUpdate: false,
+          canConfirmIncomeUpdate: false,
+          canConfirmIdentityOnly: false,
+        };
+      }
+    }
+
+    const rawAgeOver18 = payload.outcome?.answers?.age_over_18;
+    const isOver18 =
+      rawAgeOver18 === true ||
+      (typeof rawAgeOver18 === 'string' && rawAgeOver18.trim().toLowerCase() === 'true');
+
+    if (!isOver18) {
+      checks.push({
+        id: 'age_decision',
+        label: 'Decizie eligibilitate 18+ (0 PII)',
+        status: 'FAIL',
+        detail: 'Răspunsul age_over_18 nu a confirmat vârsta minimă de 18 ani.',
+      });
+      return {
+        decision: 'UNHAPPY_PATH',
+        reasonCode: 'AGE_REQUIREMENT_NOT_SATISFIED',
+        message:
+          'Nu am putut confirma eligibilitatea 18+ din EUDI Wallet. Profilul tău ZenBank a rămas neschimbat.',
+        checks,
+        verifiedIdentity: null,
+        verifiedAddress: null,
+        verifiedIncome: null,
+        addressDiff: null,
+        incomeDiff: null,
+        withheldFields,
+        revocationStatus: 'NOT_CHECKED',
+        canConfirmAddressUpdate: false,
+        canConfirmIncomeUpdate: false,
+        canConfirmIdentityOnly: false,
+      };
+    }
+
+    checks.push({
+      id: 'age_decision',
+      label: 'Decizie eligibilitate 18+ (0 PII)',
+      status: 'PASS',
+      detail: 'Rezultat DECISION (age-18): age_over_18=true; fără date personale dezvăluite.',
+    });
+
+    return {
+      decision: 'AGE_DECISION_SATISFIED',
+      reasonCode: 'AGE_OVER_18_CONFIRMED',
+      message:
+        'Eligibilitatea 18+ a fost confirmată prin EUDI Wallet — fără a partaja numele, data nașterii sau alte date personale.',
+      checks,
+      verifiedIdentity: null,
+      verifiedAddress: null,
+      verifiedIncome: null,
+      addressDiff: null,
+      incomeDiff: null,
+      withheldFields,
+      revocationStatus: 'NOT_CHECKED',
+      canConfirmAddressUpdate: false,
+      canConfirmIncomeUpdate: false,
+      canConfirmIdentityOnly: false,
+      decisionAnswers: { age_over_18: 'true' },
+      decisionBasis: payload.outcome?.basis ?? 'ATTESTATION',
+    };
+  }
+
   if (outcomeStatus !== 'SATISFIED') {
     checks.push({
       id: 'outcome_status',

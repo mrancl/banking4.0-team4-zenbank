@@ -793,4 +793,56 @@ describe('evaluateVerificationResult & claimsParser', () => {
     expect(res.canConfirmAddressUpdate).toBe(false);
     expect(res.canConfirmIncomeUpdate).toBe(false);
   });
+
+  it('evaluates age-18 DECISION SATISFIED (age_over_18=true) with zero PII disclosed', () => {
+    const radu = createSeedCustomer('radu', 'data_update');
+    const payload: DecryptedVerificationPayload = {
+      schema: 'eudi-verification-result/v1',
+      transactionId: 'tx-age-ok',
+      outcome: {
+        status: 'SATISFIED',
+        basis: 'ATTESTATION',
+        answers: { age_over_18: 'true' },
+      },
+    };
+
+    const res = evaluateVerificationResult({
+      customer: radu,
+      payload,
+      cryptoChecks: [],
+      acknowledged: true,
+      requestedScope: 'age',
+    });
+
+    expect(res.decision).toBe('AGE_DECISION_SATISFIED');
+    expect(res.reasonCode).toBe('AGE_OVER_18_CONFIRMED');
+    expect(res.verifiedIdentity).toBeNull();
+    expect(res.verifiedAddress).toBeNull();
+    expect(res.verifiedIncome).toBeNull();
+    expect(res.canConfirmAddressUpdate).toBe(false);
+    expect(res.canConfirmIncomeUpdate).toBe(false);
+    expect(res.canConfirmIdentityOnly).toBe(false);
+    expect(res.decisionAnswers).toEqual({ age_over_18: 'true' });
+  });
+
+  it('returns UNHAPPY_PATH when age-18 DECISION returns NOT_SATISFIED', () => {
+    const radu = createSeedCustomer('radu', 'data_update');
+    const payload: DecryptedVerificationPayload = {
+      schema: 'eudi-verification-result/v1',
+      transactionId: 'tx-age-fail',
+      outcome: { status: 'NOT_SATISFIED' },
+    };
+
+    const res = evaluateVerificationResult({
+      customer: radu,
+      payload,
+      cryptoChecks: [],
+      acknowledged: true,
+      requestedScope: 'age',
+    });
+
+    expect(res.decision).toBe('UNHAPPY_PATH');
+    expect(res.reasonCode).toBe('AGE_REQUIREMENT_NOT_SATISFIED');
+    expect(res.verifiedIdentity).toBeNull();
+  });
 });

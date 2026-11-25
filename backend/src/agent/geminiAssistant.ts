@@ -54,7 +54,7 @@ const RESPONSE_SCHEMA = {
     },
     requestedScope: {
       type: 'string',
-      enum: ['full', 'address', 'income'],
+      enum: ['full', 'address', 'income', 'age'],
     },
     reply: { type: 'string' },
   },
@@ -64,9 +64,9 @@ const RESPONSE_SCHEMA = {
 const SYSTEM_INSTRUCTION = [
   'Ești asistentul ZenBank pentru actualizarea datelor personale prin EUDI Wallet.',
   'Operezi strict într-un sandbox Zero-PII: nu vezi NICIODATĂ numele clienților, datele de naștere, adresele, numele angajatorilor, salariile, seriile actelor de identitate, CNP-urile sau token-urile criptografice brute.',
-  'Clasifici doar intenția utilizatorului (și scopul solicitării: full, address sau income) și oferi explicații scurte și utile pe baza stării structurate fără PII.',
+  'Clasifici doar intenția utilizatorului (și scopul solicitării: full, address, income sau age) și oferi explicații scurte și utile pe baza stării structurate fără PII.',
   'Vorbește cald, clar și prietenos, ca pentru un client obișnuit de bancă. Evită jargonul tehnic sau juridic (nu folosi termeni precum KYC, LLM, PID, JWE, URN, sandbox sau citate de legi).',
-  'Când context.selectedScope === "address", menționează clar că cerem strict atestarea de adresă (fără date despre venit și fără actul de identitate). Când context.selectedScope === "income", menționează clar că cerem strict atestarea de venit (fără adresă și fără actul de identitate).',
+  'Când context.selectedScope === "address", menționează clar că cerem strict atestarea de adresă (fără date despre venit și fără actul de identitate). Când context.selectedScope === "income", menționează clar că cerem strict atestarea de venit (fără adresă și fără actul de identitate). Când context.selectedScope === "age", menționează clar că verifici strict eligibilitatea 18+ cu 0 date personale partajate (răspuns Da/Nu, fără nume sau data nașterii).',
   'Când utilizatorul întreabă despre plăți sau transferuri și context.dataUpdateRequired === true, explică explicit că ai verificat profilul său ZenBank, menționează că datele necesită actualizare (context.missingItems) și eventuala restricție pe plăți dacă context.paymentRestricted === true, și anunță că ai pregătit verificarea prin EUDI Wallet mai jos.',
   'Când utilizatorul întreabă despre plăți și context.dataUpdateRequired === false, confirmă că ai verificat profilul ZenBank, toate datele sunt la zi și plățile sunt active fără restricții — fără să îi ceri o actualizare EUDI.',
   'Nu inventa și nu presupune date personale. Nu afirma niciodată că verificarea a reușit sau că profilul a fost actualizat decât dacă context.stage === "COMPLETED".',
@@ -174,9 +174,16 @@ export function detectRequestedScope(text: string): VerificationScope {
     /\b(venit|venitul|venituri|salariu|salariul|angajator|angajatorul|job|munca|income|salary|employer|payslip|adeverinta)\b/.test(
       ascii,
     );
+  const mentionsAge =
+    /(18\+|peste\s*18|over\s*18|\bmajor\b|\bvarsta\b|\beligibil\b|\beligibilitate\b|age[-_\s]?18|age check)/.test(
+      ascii,
+    );
 
   if (mentionsFull || (mentionsAddress && mentionsIncome)) {
     return 'full';
+  }
+  if (mentionsAge && !mentionsAddress && !mentionsIncome) {
+    return 'age';
   }
   if (mentionsAddress) {
     return 'address';
@@ -240,6 +247,9 @@ export function classifyDeterministicIntent(text: string): AssistantIntent {
     ascii.includes('update income') ||
     ascii.includes('change salary') ||
     ascii.includes('new job') ||
+    /(18\+|peste\s*18|over\s*18|\bmajor\b|\beligibil\b|\beligibilitate\b|age[-_\s]?18|age check)/.test(
+      ascii,
+    ) ||
     /\b(venit|venitul|salariu|salariul|angajator|angajatorul|income|salary|adresa|domiciliu|address)\b/.test(
       ascii,
     )
@@ -281,12 +291,14 @@ export function buildZeroPiiContext(opts: {
   const accountCheck = checkCustomerAccountStatus(customer);
 
   const scope = selectedScope ?? 'full';
-  const requestedCredentials: Array<'PID' | 'ADDRESS' | 'INCOME'> =
-    scope === 'address'
-      ? ['ADDRESS']
-      : scope === 'income'
-        ? ['INCOME']
-        : ['PID', 'ADDRESS', 'INCOME'];
+  const requestedCredentials: Array<'PID' | 'ADDRESS' | 'INCOME' | 'AGE_18'> =
+    scope === 'age'
+      ? ['AGE_18']
+      : scope === 'address'
+        ? ['ADDRESS']
+        : scope === 'income'
+          ? ['INCOME']
+          : ['PID', 'ADDRESS', 'INCOME'];
 
   return {
     stage,
@@ -328,6 +340,9 @@ function deterministicReply(
 
   switch (intent) {
     case 'START_DATA_UPDATE':
+      if (ctx.selectedScope === 'age') {
+        return 'Perfect — pot verifica eligibilitatea 18+ prin EUDI Wallet fără să ne partajezi numele, data nașterii sau alte date personale. Primim strict un răspuns Da/Nu.';
+      }
       if (ctx.selectedScope === 'address') {
         return 'Perfect — îți putem actualiza strict adresa de domiciliu prin EUDI Wallet, fără să solicităm date despre venit sau actul de identitate.';
       }

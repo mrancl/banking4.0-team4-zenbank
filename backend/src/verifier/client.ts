@@ -268,6 +268,8 @@ export type MockWalletVariant =
   | 'SATISFIED_ADDRESS_ONLY'
   | 'SATISFIED_INCOME_ONLY'
   | 'SATISFIED_SAME_ADDRESS'
+  | 'AGE_OVER_18_SATISFIED'
+  | 'AGE_OVER_18_NOT_SATISFIED'
   | 'WITHHELD_ADDRESS'
   | 'REFUSED'
   | 'NOT_SATISFIED'
@@ -643,6 +645,28 @@ export class MockVerifierClient implements VerifierClient {
           transactionId,
           outcome: { status: 'SATISFIED', basis: 'DISCLOSURE' },
           credentials: [minimalIncome],
+        };
+        break;
+      case 'AGE_OVER_18_SATISFIED':
+        body = {
+          schema: 'eudi-verification-result/v1',
+          transactionId,
+          outcome: {
+            status: 'SATISFIED',
+            basis: 'ATTESTATION',
+            answers: { age_over_18: 'true' },
+          },
+        };
+        break;
+      case 'AGE_OVER_18_NOT_SATISFIED':
+        body = {
+          schema: 'eudi-verification-result/v1',
+          transactionId,
+          outcome: {
+            status: 'NOT_SATISFIED',
+            basis: 'ATTESTATION',
+            answers: { age_over_18: 'false' },
+          },
         };
         break;
       case 'REFUSED':

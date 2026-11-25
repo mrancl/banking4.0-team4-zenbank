@@ -166,6 +166,16 @@ export function ChatStream({
             className="quick-chip"
             disabled={loading}
             onClick={() =>
+              onSendChat('Vreau să verific eligibilitatea 18+', 'START_DATA_UPDATE', 'age')
+            }
+          >
+            Verifică eligibilitatea 18+
+          </button>
+          <button
+            type="button"
+            className="quick-chip"
+            disabled={loading}
+            onClick={() =>
               onSendChat('Ce date sunt necesare și cum sunt protejate?', 'EXPLAIN_PRIVACY')
             }
           >

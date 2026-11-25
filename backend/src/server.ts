@@ -21,12 +21,12 @@ const chatSchema = z.object({
   quickAction: z
     .enum(['START_DATA_UPDATE', 'EXPLAIN_PAYMENT_RESTRICTION', 'EXPLAIN_PRIVACY'])
     .optional(),
-  scope: z.enum(['full', 'address', 'income']).optional(),
+  scope: z.enum(['full', 'address', 'income', 'age']).optional(),
 });
 
 const startProfileSchema = z
   .object({
-    scope: z.enum(['full', 'address', 'income']).optional(),
+    scope: z.enum(['full', 'address', 'income', 'age']).optional(),
   })
   .optional();
 

@@ -283,9 +283,11 @@ export function EudiCardRenderer({
         {card.profileCode && (
           <div className="profile-scope-pill">
             <span>
-              {card.scope === 'address' || card.scope === 'income'
-                ? 'Minimizare date activă · Profil:'
-                : 'Verificare completă · Profil:'}
+              {card.scope === 'age'
+                ? 'Decizie zero-PII · Profil:'
+                : card.scope === 'address' || card.scope === 'income'
+                  ? 'Minimizare date activă · Profil:'
+                  : 'Verificare completă · Profil:'}
             </span>
             <strong className="mono">{card.profileCode}</strong>
           </div>
@@ -480,52 +482,71 @@ export function EudiCardRenderer({
 
   if (card.type === 'completed') {
     const doneCard = card;
+    const isAgeDecision = doneCard.scope === 'age' || Boolean(doneCard.ageVerified);
     return (
       <div className="inline-card inline-card-success">
         <div className="card-title-row">
           <div className="card-title" style={{ color: 'var(--green)' }}>
             <CheckCircle2 size={17} />
-            Datele tale au fost actualizate
+            {isAgeDecision ? 'Eligibilitate 18+ confirmată' : 'Datele tale au fost actualizate'}
           </div>
-          <span className="badge badge-green">Actualizat</span>
+          <span className="badge badge-green">
+            {isAgeDecision ? '18+ Confirmat' : 'Actualizat'}
+          </span>
         </div>
 
         <div className="checklist">
-          {doneCard.identityReconfirmed && (
-            <div className="check-row">
-              <Check size={16} /> Identitate reconfirmată
-            </div>
-          )}
-          {doneCard.scope !== 'income' && (
-            <div className="check-row">
-              <Check size={16} />{' '}
-              {doneCard.addressUpdated
-                ? `Adresă actualizată: ${doneCard.updatedAddress.formatted}`
-                : 'Adresa existentă a fost păstrată'}
-            </div>
-          )}
-          {doneCard.scope !== 'address' && (
-            <div className="check-row">
-              <Check size={16} />{' '}
-              {doneCard.incomeUpdated
-                ? `Venit actualizat: ${doneCard.updatedIncome.employer} · ${doneCard.updatedIncome.bracket}`
-                : 'Datele de venit existente au fost păstrate'}
-            </div>
-          )}
-          {doneCard.scope === 'address' && (
-            <div className="check-row">
-              <Check size={16} /> Venitul și identitatea nu au fost solicitate (minimizare date)
-            </div>
-          )}
-          {doneCard.scope === 'income' && (
-            <div className="check-row">
-              <Check size={16} /> Adresa și identitatea nu au fost solicitate (minimizare date)
-            </div>
-          )}
-          {doneCard.restrictionLifted && (
-            <div className="check-row">
-              <Check size={16} /> Restricția pe plăți a fost ridicată
-            </div>
+          {isAgeDecision ? (
+            <>
+              <div className="check-row">
+                <Check size={16} /> Vârstă 18+ confirmată (profil DECISION · age-18)
+              </div>
+              <div className="check-row">
+                <Check size={16} /> 0 date personale partajate (fără nume, CNP sau data nașterii)
+              </div>
+              <div className="check-row">
+                <Check size={16} /> Profilul tău ZenBank a rămas neschimbat
+              </div>
+            </>
+          ) : (
+            <>
+              {doneCard.identityReconfirmed && (
+                <div className="check-row">
+                  <Check size={16} /> Identitate reconfirmată
+                </div>
+              )}
+              {doneCard.scope !== 'income' && (
+                <div className="check-row">
+                  <Check size={16} />{' '}
+                  {doneCard.addressUpdated
+                    ? `Adresă actualizată: ${doneCard.updatedAddress.formatted}`
+                    : 'Adresa existentă a fost păstrată'}
+                </div>
+              )}
+              {doneCard.scope !== 'address' && (
+                <div className="check-row">
+                  <Check size={16} />{' '}
+                  {doneCard.incomeUpdated
+                    ? `Venit actualizat: ${doneCard.updatedIncome.employer} · ${doneCard.updatedIncome.bracket}`
+                    : 'Datele de venit existente au fost păstrate'}
+                </div>
+              )}
+              {doneCard.scope === 'address' && (
+                <div className="check-row">
+                  <Check size={16} /> Venitul și identitatea nu au fost solicitate (minimizare date)
+                </div>
+              )}
+              {doneCard.scope === 'income' && (
+                <div className="check-row">
+                  <Check size={16} /> Adresa și identitatea nu au fost solicitate (minimizare date)
+                </div>
+              )}
+              {doneCard.restrictionLifted && (
+                <div className="check-row">
+                  <Check size={16} /> Restricția pe plăți a fost ridicată
+                </div>
+              )}
+            </>
           )}
           {doneCard.noDocumentUploadRequired && (
             <div className="check-row">

@@ -797,4 +797,51 @@ describe('ZenBank EUDI API end-to-end journeys', () => {
     expect(res2.body.activeFlowCard.code).toBe('RESPONSE_CODE_INVALID');
     expect(res2.body.activeFlowCard.canRetryEudi).toBe(true);
   });
+
+  it('completes zero-PII DECISION age-18 check in Chat without mutating customer profile', async () => {
+    const { app, mockVerifier } = await setupTestServer();
+    const sid = 'sess-age-18-chat';
+
+    const chatRes = await request(app)
+      .post('/api/chat')
+      .set('X-Session-Id', sid)
+      .send({
+        message: 'Vreau să verific eligibilitatea 18+',
+        quickAction: 'START_DATA_UPDATE',
+        scope: 'age',
+      });
+
+    expect(chatRes.status).toBe(200);
+    expect(chatRes.body.stage).toBe('PRE_CONSENT');
+    expect(chatRes.body.selectedScope).toBe('age');
+    expect(chatRes.body.selectedProfileCode).toBe('age-18');
+    expect(chatRes.body.activeFlowCard.type).toBe('pre_consent');
+    expect(chatRes.body.activeFlowCard.profileCode).toBe('age-18');
+
+    const startRes = await request(app)
+      .post('/api/verifications/start')
+      .set('X-Session-Id', sid)
+      .send({});
+    expect(startRes.status).toBe(201);
+    expect(startRes.body.activeFlowCard.profileCode).toBe('age-18');
+
+    const txId = startRes.body.activeVerification.transactionId as string;
+    await mockVerifier.approveTransaction(txId, 'AGE_OVER_18_SATISFIED');
+
+    const pollRes = await request(app)
+      .get(`/api/verifications/${txId}/poll`)
+      .set('X-Session-Id', sid);
+
+    expect(pollRes.status).toBe(200);
+    expect(pollRes.body.stage).toBe('COMPLETED');
+    expect(pollRes.body.activeVerification).toBeNull();
+    expect(pollRes.body.activeFlowCard.type).toBe('completed');
+    expect(pollRes.body.activeFlowCard.scope).toBe('age');
+    expect(pollRes.body.activeFlowCard.ageVerified).toBe(true);
+    expect(pollRes.body.customer.currentAddress.streetAddress).toBe('Bulevardul Unirii 22');
+    expect(pollRes.body.customer.kycStatus).toBe('RECONFIRMATION_NEEDED');
+
+    const refetch = await mockVerifier.fetchSealedResult(txId);
+    expect(refetch.kind).toBe('gone');
+  });
 });
