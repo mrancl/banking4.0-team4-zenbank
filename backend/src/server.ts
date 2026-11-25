@@ -55,6 +55,13 @@ const claimSchema = z.object({
   responseCode: z.string().min(1).max(2048),
 });
 
+const cancelFlowSchema = z
+  .object({
+    reason: z.enum(['USER_CANCELLED', 'WALLET_DECLINED']).optional(),
+    detail: z.string().max(400).optional(),
+  })
+  .optional();
+
 export interface ServerContext {
   app: express.Express;
   orchestrator: JourneyOrchestrator;
@@ -245,6 +252,15 @@ export async function createApp(
     try {
       const parsed = startProfileSchema.parse(req.body);
       res.json(orchestrator.startProfileUpdate(resolveSessionId(req), parsed?.scope ?? 'full'));
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.post('/api/flow/cancel', (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const parsed = cancelFlowSchema.parse(req.body);
+      res.json(orchestrator.cancelFlow(resolveSessionId(req), parsed));
     } catch (err) {
       next(err);
     }

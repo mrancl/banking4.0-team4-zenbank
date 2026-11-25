@@ -81,6 +81,19 @@ export const api = {
     });
   },
 
+  cancelFlow(
+    reason?: 'USER_CANCELLED' | 'WALLET_DECLINED',
+    detail?: string,
+  ): Promise<SessionPublicState> {
+    return apiFetch('/api/flow/cancel', {
+      method: 'POST',
+      body: JSON.stringify({
+        ...(reason ? { reason } : {}),
+        ...(detail ? { detail } : {}),
+      }),
+    });
+  },
+
   startProfileUpdate(scope?: VerificationScope): Promise<SessionPublicState> {
     return apiFetch('/api/profile/start-update', {
       method: 'POST',

@@ -526,6 +526,57 @@ export class JourneyOrchestrator {
     return this.getPublicState(sessionId);
   }
 
+  /**
+   * Explicitly cancels the active update / verification flow (either user-cancelled or
+   * wallet-declined), ensuring polling stops cleanly and no ZenBank profile fields mutate.
+   */
+  cancelFlow(
+    sessionId: string,
+    opts?: { reason?: 'USER_CANCELLED' | 'WALLET_DECLINED'; detail?: string },
+  ): SessionPublicState {
+    const session = this.getSessionInternal(sessionId);
+
+    if (opts?.reason === 'WALLET_DECLINED') {
+      this.handleTerminalErrorStatus(session, 'DECLINED', opts.detail);
+      return this.getPublicState(sessionId);
+    }
+
+    const wasChat = session.flowChannel === 'chat';
+    session.stage = 'IDLE';
+    session.flowChannel = null;
+    session.selectedScope = 'full';
+    session.selectedProfileCode = this.deps.profileCode;
+    session.activeFlowCard = null;
+    session.activeVerification = null;
+    session.pendingUpdate = null;
+
+    session.lastZeroPiiContext = buildZeroPiiContext({
+      stage: session.stage,
+      customer: session.customer,
+      evaluation: session.lastEvaluation,
+      selectedScope: session.selectedScope,
+      selectedProfileCode: session.selectedProfileCode,
+      language: session.language,
+    });
+
+    this.addAudit(
+      session,
+      'AGENT',
+      'FLOW_CANCELLED',
+      'Clientul a anulat pasul curent de actualizare.',
+    );
+
+    if (wasChat) {
+      this.addMessage(
+        session,
+        'agent',
+        'Am anulat operațiunea curentă. Profilul tău ZenBank a rămas neschimbat și poți relua verificarea oricând.',
+      );
+    }
+
+    return this.getPublicState(sessionId);
+  }
+
   async startVerification(
     sessionId: string,
     launchMode: VerificationLaunchMode = 'cross_device',
@@ -642,16 +693,12 @@ export class JourneyOrchestrator {
       return this.getPublicState(sessionId);
     }
 
-    if (
-      statusResp.status === 'DECLINED' ||
-      statusResp.status === 'WALLET_ERROR' ||
-      statusResp.status === 'EXPIRED'
-    ) {
-      this.handleTerminalErrorStatus(session, statusResp.status, statusResp.reason ?? statusResp.walletError ?? undefined);
-      return this.getPublicState(sessionId);
-    }
-
     if (statusResp.status !== 'COMPLETED') {
+      this.handleTerminalErrorStatus(
+        session,
+        statusResp.status,
+        statusResp.reason ?? statusResp.walletError ?? undefined,
+      );
       return this.getPublicState(sessionId);
     }
 
@@ -733,17 +780,39 @@ export class JourneyOrchestrator {
     }
 
     const promise = (async () => {
-      const claimed = await this.claimWithRetry(txId, responseCode);
+      let claimed;
+      try {
+        claimed = await this.claimWithRetry(txId, responseCode);
+      } catch (err) {
+        const terminalClaimCodes = new Set([
+          'VERIFICATION_EXPIRED',
+          'RESPONSE_CODE_INVALID',
+          'RESULT_GONE',
+          'DECLINED',
+          'WALLET_ERROR',
+          'EXPIRED',
+        ]);
+        if (err instanceof VerifierHttpError && terminalClaimCodes.has(err.code)) {
+          this.handleTerminalErrorStatus(session, err.code, err.message);
+          return this.getPublicState(sessionId);
+        }
+        throw err;
+      }
+
       if (session.activeVerification) {
         session.activeVerification.status = claimed.status;
       }
       this.syncWalletQrStatus(session, txId, claimed.status);
 
       if (
-        claimed.status === 'DECLINED' ||
-        claimed.status === 'WALLET_ERROR' ||
-        claimed.status === 'EXPIRED'
+        claimed.status === 'CREATED' ||
+        claimed.status === 'REQUEST_RETRIEVED' ||
+        claimed.status === 'RESPONSE_CODE_REQUIRED'
       ) {
+        return this.getPublicState(sessionId);
+      }
+
+      if (claimed.status !== 'COMPLETED') {
         this.handleTerminalErrorStatus(
           session,
           claimed.status,
@@ -1028,12 +1097,45 @@ export class JourneyOrchestrator {
       DECLINED: {
         title: 'Partajare refuzată în wallet',
         detail:
+          reason ||
           'Ai ales să nu partajezi datele în EUDI Wallet. Profilul tău ZenBank nu a fost modificat.',
+      },
+      CANCELLED: {
+        title: 'Verificare anulată',
+        detail: 'Ai anulat verificarea în EUDI Wallet. Profilul tău ZenBank a rămas neschimbat.',
+      },
+      REJECTED: {
+        title: 'Verificare respinsă',
+        detail:
+          reason ||
+          'Verificarea din EUDI Wallet nu a îndeplinit cerințele. Profilul tău ZenBank a rămas neschimbat.',
+      },
+      RESPONSE_RECEIVED: {
+        title: 'Răspuns incomplet de la EUDI Wallet',
+        detail:
+          reason ||
+          'Verificarea s-a încheiat fără un rezultat aprobat. Poți reîncerca verificarea.',
+      },
+      FAILED: {
+        title: 'Verificarea a eșuat',
+        detail:
+          reason ||
+          'Verificarea nu a putut fi finalizată în EUDI Wallet. Te rugăm să reîncerci.',
       },
       EXPIRED: {
         title: 'Cererea de verificare a expirat',
         detail:
           'Timpul de 5 minute pentru aprobare a expirat. Poți porni oricând o verificare nouă.',
+      },
+      VERIFICATION_EXPIRED: {
+        title: 'Cererea de verificare a expirat',
+        detail:
+          'Cererea de verificare a expirat înainte de finalizare. Poți porni o verificare nouă.',
+      },
+      RESPONSE_CODE_INVALID: {
+        title: 'Cod de confirmare expirat sau invalid',
+        detail:
+          'Codul de confirmare din EUDI Wallet nu mai este valabil. Te rugăm să pornești o verificare nouă.',
       },
       WALLET_ERROR: {
         title: 'Eroare în aplicația EUDI Wallet',

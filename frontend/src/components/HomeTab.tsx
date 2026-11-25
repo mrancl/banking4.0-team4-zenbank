@@ -42,6 +42,7 @@ interface HomeTabProps {
     mode: 'UPDATE_PROFILE' | 'UPDATE_ADDRESS' | 'IDENTITY_ONLY',
   ) => void;
   onRetryVerification: () => void;
+  onCancelFlow?: () => void;
   onOpenChat: () => void;
 }
 
@@ -61,6 +62,7 @@ export function HomeTab({
   onStartVerification,
   onConfirmUpdate,
   onRetryVerification,
+  onCancelFlow,
   onOpenChat,
 }: HomeTabProps) {
   if (profileFlowOpen && flowChannel === 'profile' && activeFlowCard) {
@@ -93,6 +95,7 @@ export function HomeTab({
             onConfirmUpdate={onConfirmUpdate}
             onRetryVerification={onRetryVerification}
             onStartFallbackScope={onStartProfileUpdate}
+            onCancelFlow={onCancelFlow}
             doneButtonLabel="Înapoi la datele mele"
             onDone={onCloseProfileFlow}
           />

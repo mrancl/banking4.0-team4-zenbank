@@ -166,10 +166,6 @@ public class MainActivity extends Activity {
             error = extractParam(data, "error");
         }
 
-        if ((responseCode == null || responseCode.isEmpty()) && (error == null || error.isEmpty())) {
-            return;
-        }
-
         Log.i(
                 TAG,
                 "Delivering callback hasCode="

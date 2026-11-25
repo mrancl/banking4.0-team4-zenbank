@@ -22,6 +22,7 @@ interface ChatStreamProps {
     mode: 'UPDATE_PROFILE' | 'UPDATE_ADDRESS' | 'IDENTITY_ONLY',
   ) => void;
   onRetryVerification: () => void;
+  onCancelFlow?: () => void;
   onGoHome: () => void;
 }
 
@@ -45,6 +46,7 @@ export function ChatStream({
   onStartVerification,
   onConfirmUpdate,
   onRetryVerification,
+  onCancelFlow,
   onGoHome,
 }: ChatStreamProps) {
   const [input, setInput] = useState('');
@@ -96,6 +98,7 @@ export function ChatStream({
                 onStartFallbackScope={(scope) =>
                   onSendChat('Vreau să îmi actualizez doar adresa acum', 'START_DATA_UPDATE', scope)
                 }
+                onCancelFlow={onCancelFlow}
                 doneButtonLabel="Vezi datele actualizate"
                 onDone={onGoHome}
               />

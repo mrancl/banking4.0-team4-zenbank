@@ -98,6 +98,7 @@ export function App() {
   const activeTxId = session?.activeVerification?.transactionId ?? null;
   const activeTxRef = useRef<string | null>(null);
   activeTxRef.current = activeTxId;
+  const pollErrorRef = useRef(false);
 
   useEffect(() => {
     try {
@@ -114,6 +115,7 @@ export function App() {
   const runAction = useCallback(async (fn: () => Promise<SessionPublicState>) => {
     setLoading(true);
     setError(null);
+    pollErrorRef.current = false;
     try {
       const next = await fn();
       setSession(next);
@@ -124,19 +126,36 @@ export function App() {
     }
   }, []);
 
+  const handleCancelFlow = useCallback(() => {
+    pollErrorRef.current = false;
+    void runAction(async () => {
+      const next = await api.cancelFlow('USER_CANCELLED');
+      try {
+        window.localStorage.removeItem(ACTIVE_TX_STORAGE_KEY);
+      } catch {
+        // ignore storage errors
+      }
+      if (next.flowChannel === null) {
+        setProfileFlowOpen(false);
+      }
+      return next;
+    });
+  }, [runAction]);
+
   const handleEudiCallback = useCallback(
     (responseCode?: string | null, walletError?: string | null) => {
       const code = responseCode?.trim();
       const errMsg = walletError?.trim();
+      const savedTxId = (() => {
+        if (activeTxRef.current) return activeTxRef.current;
+        try {
+          return window.localStorage.getItem(ACTIVE_TX_STORAGE_KEY) || undefined;
+        } catch {
+          return undefined;
+        }
+      })();
+
       if (code) {
-        const savedTxId = (() => {
-          if (activeTxRef.current) return activeTxRef.current;
-          try {
-            return window.localStorage.getItem(ACTIVE_TX_STORAGE_KEY) || undefined;
-          } catch {
-            return undefined;
-          }
-        })();
         void runAction(async () => {
           const next = await api.claimVerification(code, savedTxId);
           try {
@@ -157,22 +176,44 @@ export function App() {
       }
 
       if (errMsg) {
-        const currentTx = activeTxRef.current;
-        if (currentTx) {
-          void api
-            .pollVerification(currentTx)
-            .then((next) => {
-              setSession(next);
-              if (next.stage === 'AWAITING_WALLET') {
-                setError(`EUDI Wallet: ${errMsg}`);
-              }
-            })
-            .catch(() => {
-              setError(`EUDI Wallet: ${errMsg}`);
-            });
-        } else {
-          setError(`EUDI Wallet: ${errMsg}`);
-        }
+        void runAction(async () => {
+          let next = savedTxId
+            ? await api.pollVerification(savedTxId).catch(() => null)
+            : null;
+          if (!next || next.stage === 'AWAITING_WALLET') {
+            next = await api.cancelFlow('WALLET_DECLINED', `EUDI Wallet: ${errMsg}`);
+          }
+          try {
+            window.localStorage.removeItem(ACTIVE_TX_STORAGE_KEY);
+          } catch {
+            // ignore storage errors
+          }
+          if (next.flowChannel === 'profile') {
+            setProfileFlowOpen(true);
+            setActiveTab('home');
+          } else if (next.flowChannel === 'chat') {
+            setProfileFlowOpen(false);
+            setActiveTab('chat');
+          }
+          return next;
+        });
+        return;
+      }
+
+      if (savedTxId) {
+        void api
+          .pollVerification(savedTxId)
+          .then((next) => {
+            if (pollErrorRef.current) {
+              pollErrorRef.current = false;
+              setError(null);
+            }
+            setSession(next);
+          })
+          .catch((err) => {
+            pollErrorRef.current = true;
+            setError(err instanceof Error ? err.message : 'Verificarea statusului a eșuat');
+          });
       }
     },
     [runAction],
@@ -238,11 +279,15 @@ export function App() {
       try {
         const next = await api.pollVerification(activeTxId);
         if (!cancelled) {
-          setError(null);
+          if (pollErrorRef.current) {
+            pollErrorRef.current = false;
+            setError(null);
+          }
           setSession(next);
         }
       } catch (err) {
         if (!cancelled && document.visibilityState !== 'hidden') {
+          pollErrorRef.current = true;
           setError(err instanceof Error ? err.message : 'Verificarea statusului a eșuat');
         }
       } finally {
@@ -376,6 +421,7 @@ export function App() {
                 });
               }}
               onRetryVerification={() => void runAction(() => api.startVerification(launchMode))}
+              onCancelFlow={handleCancelFlow}
               onOpenChat={() => {
                 setProfileFlowOpen(false);
                 setActiveTab('chat');
@@ -407,6 +453,7 @@ export function App() {
                 });
               }}
               onRetryVerification={() => void runAction(() => api.startVerification(launchMode))}
+              onCancelFlow={handleCancelFlow}
               onGoHome={() => {
                 setProfileFlowOpen(false);
                 setActiveTab('home');

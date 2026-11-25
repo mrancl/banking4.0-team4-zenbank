@@ -88,11 +88,15 @@ function Countdown({ expiresAt }: { expiresAt: string }) {
 function WalletQrCardView({
   card,
   isActive,
+  loading = false,
   isAndroidWrapper = false,
+  onCancelFlow,
 }: {
   card: Extract<ChatCard, { type: 'wallet_qr' }>;
   isActive: boolean;
+  loading?: boolean;
   isAndroidWrapper?: boolean;
+  onCancelFlow?: () => void;
 }) {
   const [copied, setCopied] = useState<'adb' | 'link' | null>(null);
   const adbCmd = `adb shell am start -a android.intent.action.VIEW -d '"${card.deepLink}"'`;
@@ -179,12 +183,23 @@ function WalletQrCardView({
             <span className="pulse-dot" aria-hidden="true" />
             <span>
               {card.status === 'RESPONSE_CODE_REQUIRED'
-                ? 'Datele au fost trimise din EUDI Wallet — apasă Close în Wallet pentru a reveni și finaliza automat.'
+                ? 'Răspunsul din EUDI Wallet a fost înregistrat — apasă Close în Wallet pentru a reveni automat, sau Anulează dacă ai renunțat.'
                 : card.status === 'REQUEST_RETRIEVED'
-                  ? 'Cererea este deschisă în EUDI Wallet — aprobă cu PIN-ul tău…'
+                  ? 'Cererea este deschisă în EUDI Wallet — aprobă cu PIN-ul tău (sau apasă Anulează dacă ai renunțat în Wallet).'
                   : 'Așteptăm confirmarea din EUDI Wallet…'}
             </span>
           </div>
+        )}
+
+        {isActive && onCancelFlow && (
+          <button
+            type="button"
+            className="btn btn-ghost btn-block"
+            disabled={loading}
+            onClick={onCancelFlow}
+          >
+            Anulează verificarea
+          </button>
         )}
       </div>
 
@@ -235,6 +250,7 @@ interface EudiCardRendererProps {
   ) => void;
   onRetryVerification: () => void;
   onStartFallbackScope?: (scope: VerificationScope) => void;
+  onCancelFlow?: () => void;
   doneButtonLabel: string;
   onDone: () => void;
 }
@@ -249,6 +265,7 @@ export function EudiCardRenderer({
   onConfirmUpdate,
   onRetryVerification,
   onStartFallbackScope,
+  onCancelFlow,
   doneButtonLabel,
   onDone,
 }: EudiCardRendererProps) {
@@ -295,14 +312,27 @@ export function EudiCardRenderer({
           ))}
         </div>
 
-        <button
-          type="button"
-          className="btn btn-primary btn-block"
-          disabled={loading}
-          onClick={onStartVerification}
-        >
-          Continuă cu EUDI Wallet
-        </button>
+        <div className="mobile-card-actions">
+          <button
+            type="button"
+            className="btn btn-primary btn-block"
+            disabled={loading}
+            onClick={onStartVerification}
+          >
+            Continuă cu EUDI Wallet
+          </button>
+
+          {onCancelFlow && (
+            <button
+              type="button"
+              className="btn btn-ghost btn-block"
+              disabled={loading}
+              onClick={onCancelFlow}
+            >
+              Anulează
+            </button>
+          )}
+        </div>
       </div>
     );
   }
@@ -312,7 +342,9 @@ export function EudiCardRenderer({
       <WalletQrCardView
         card={card}
         isActive={activeTransactionId === card.transactionId}
+        loading={loading}
         isAndroidWrapper={isAndroidWrapper}
+        onCancelFlow={onCancelFlow}
       />
     );
   }
@@ -428,6 +460,17 @@ export function EudiCardRenderer({
           {!canUpdateProfile && !diffCard.canConfirmIdentityOnly && (
             <button type="button" className="btn btn-secondary btn-block" onClick={onDone}>
               {doneButtonLabel}
+            </button>
+          )}
+
+          {!isConfirmed && onCancelFlow && (
+            <button
+              type="button"
+              className="btn btn-ghost btn-block"
+              disabled={loading}
+              onClick={onCancelFlow}
+            >
+              Anulează
             </button>
           )}
         </div>

@@ -1,9 +1,9 @@
 import crypto from 'node:crypto';
 import request from 'supertest';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import type { AppConfig } from '../config.js';
 import { createApp } from '../server.js';
-import { MockVerifierClient } from '../verifier/client.js';
+import { MockVerifierClient, VerifierHttpError } from '../verifier/client.js';
 
 describe('ZenBank EUDI API end-to-end journeys', () => {
   const issuer = 'https://verifier.example.test';
@@ -623,5 +623,178 @@ describe('ZenBank EUDI API end-to-end journeys', () => {
     expect(secondConfirm.body.customer.incomeVerified).toBe(false);
     expect(secondConfirm.body.customer.currentIncome.employer).toBe('Nedeclarat / Necesită actualizare');
     expect(secondConfirm.body.customer.kycStatus).toBe('INCOMPLETE_UPDATE');
+  });
+
+  it('handles POST /api/flow/cancel for both USER_CANCELLED and WALLET_DECLINED without mutating profile', async () => {
+    const { app } = await setupTestServer();
+    const sid = 'sess-cancel-flow';
+
+    await request(app)
+      .post('/api/profile/start-update')
+      .set('X-Session-Id', sid)
+      .send({ scope: 'address' });
+
+    const startRes = await request(app)
+      .post('/api/verifications/start')
+      .set('X-Session-Id', sid)
+      .send({ mode: 'same_device_native' });
+    expect(startRes.status).toBe(201);
+    expect(startRes.body.stage).toBe('AWAITING_WALLET');
+    expect(startRes.body.activeVerification).not.toBeNull();
+
+    const userCancelRes = await request(app)
+      .post('/api/flow/cancel')
+      .set('X-Session-Id', sid)
+      .send({ reason: 'USER_CANCELLED' });
+    expect(userCancelRes.status).toBe(200);
+    expect(userCancelRes.body.stage).toBe('IDLE');
+    expect(userCancelRes.body.flowChannel).toBeNull();
+    expect(userCancelRes.body.activeVerification).toBeNull();
+    expect(userCancelRes.body.activeFlowCard).toBeNull();
+    expect(userCancelRes.body.customer.currentAddress.streetAddress).toBe('Bulevardul Unirii 22');
+
+    // Start a chat flow and trigger WALLET_DECLINED fallback cancel
+    await request(app)
+      .post('/api/chat')
+      .set('X-Session-Id', sid)
+      .send({ message: 'Vreau să-mi actualizez datele personale' });
+
+    const startRes2 = await request(app)
+      .post('/api/verifications/start')
+      .set('X-Session-Id', sid)
+      .send({ mode: 'same_device_native' });
+    expect(startRes2.status).toBe(201);
+
+    const declinedCancelRes = await request(app)
+      .post('/api/flow/cancel')
+      .set('X-Session-Id', sid)
+      .send({ reason: 'WALLET_DECLINED', detail: 'EUDI Wallet: access_denied' });
+    expect(declinedCancelRes.status).toBe(200);
+    expect(declinedCancelRes.body.stage).toBe('DECLINED');
+    expect(declinedCancelRes.body.activeVerification).toBeNull();
+    expect(declinedCancelRes.body.activeFlowCard.type).toBe('recovery');
+    expect(declinedCancelRes.body.activeFlowCard.code).toBe('DECLINED');
+    expect(declinedCancelRes.body.activeFlowCard.canRetryEudi).toBe(true);
+    expect(declinedCancelRes.body.activeFlowCard.detail).toContain('access_denied');
+  });
+
+  it('transitions cleanly to DECLINED recovery card when polling receives DECLINED or REJECTED', async () => {
+    const { app, mockVerifier } = await setupTestServer();
+    const sid = 'sess-poll-terminal';
+
+    await request(app)
+      .post('/api/profile/start-update')
+      .set('X-Session-Id', sid)
+      .send({ scope: 'full' });
+
+    const startDeclined = await request(app)
+      .post('/api/verifications/start')
+      .set('X-Session-Id', sid)
+      .send({});
+    const txDeclined = startDeclined.body.activeVerification.transactionId as string;
+    await mockVerifier.approveTransaction(txDeclined, 'DECLINED');
+
+    const pollDeclined = await request(app)
+      .get(`/api/verifications/${txDeclined}/poll`)
+      .set('X-Session-Id', sid);
+    expect(pollDeclined.status).toBe(200);
+    expect(pollDeclined.body.stage).toBe('DECLINED');
+    expect(pollDeclined.body.activeVerification).toBeNull();
+    expect(pollDeclined.body.activeFlowCard.type).toBe('recovery');
+    expect(pollDeclined.body.activeFlowCard.code).toBe('DECLINED');
+    expect(pollDeclined.body.activeFlowCard.canRetryEudi).toBe(true);
+
+    const startRejected = await request(app)
+      .post('/api/verifications/start')
+      .set('X-Session-Id', sid)
+      .send({});
+    const txRejected = startRejected.body.activeVerification.transactionId as string;
+    const statusSpy = vi
+      .spyOn(mockVerifier, 'getVerificationStatus')
+      .mockResolvedValueOnce({
+        transactionId: txRejected,
+        status: 'REJECTED',
+        reason: 'Holder cancelled in wallet',
+      });
+
+    const pollRejected = await request(app)
+      .get(`/api/verifications/${txRejected}/poll`)
+      .set('X-Session-Id', sid);
+    statusSpy.mockRestore();
+
+    expect(pollRejected.status).toBe(200);
+    expect(pollRejected.body.stage).toBe('DECLINED');
+    expect(pollRejected.body.activeVerification).toBeNull();
+    expect(pollRejected.body.activeFlowCard.type).toBe('recovery');
+    expect(pollRejected.body.activeFlowCard.code).toBe('REJECTED');
+    expect(pollRejected.body.activeFlowCard.title).toBe('Verificare respinsă');
+  });
+
+  it('transitions cleanly to DECLINED recovery card when /claim returns DECLINED or RESPONSE_CODE_INVALID', async () => {
+    const { app, mockVerifier } = await setupTestServer();
+    const sid = 'sess-claim-terminal';
+
+    await request(app)
+      .post('/api/profile/start-update')
+      .set('X-Session-Id', sid)
+      .send({ scope: 'full' });
+
+    // 1. /claim returns non-COMPLETED status (DECLINED)
+    const s1 = await request(app)
+      .post('/api/verifications/start')
+      .set('X-Session-Id', sid)
+      .send({ mode: 'same_device_native' });
+    const tx1 = s1.body.activeVerification.transactionId as string;
+
+    const claimDeclinedSpy = vi
+      .spyOn(mockVerifier, 'claimVerification')
+      .mockResolvedValueOnce({
+        transactionId: tx1,
+        status: 'DECLINED',
+        reason: 'Declined in wallet',
+      });
+
+    const res1 = await request(app)
+      .post('/api/verifications/claim')
+      .set('X-Session-Id', sid)
+      .send({ transactionId: tx1, responseCode: 'rc-declined' });
+    claimDeclinedSpy.mockRestore();
+
+    expect(res1.status).toBe(200);
+    expect(res1.body.stage).toBe('DECLINED');
+    expect(res1.body.activeVerification).toBeNull();
+    expect(res1.body.activeFlowCard.type).toBe('recovery');
+    expect(res1.body.activeFlowCard.code).toBe('DECLINED');
+    expect(res1.body.activeFlowCard.canRetryEudi).toBe(true);
+
+    // 2. /claim throws terminal RESPONSE_CODE_INVALID
+    const s2 = await request(app)
+      .post('/api/verifications/start')
+      .set('X-Session-Id', sid)
+      .send({ mode: 'same_device_native' });
+    const tx2 = s2.body.activeVerification.transactionId as string;
+
+    const claimInvalidSpy = vi
+      .spyOn(mockVerifier, 'claimVerification')
+      .mockRejectedValueOnce(
+        new VerifierHttpError(
+          400,
+          'RESPONSE_CODE_INVALID',
+          'The response code does not match this verification',
+        ),
+      );
+
+    const res2 = await request(app)
+      .post('/api/verifications/claim')
+      .set('X-Session-Id', sid)
+      .send({ transactionId: tx2, responseCode: 'rc-stale' });
+    claimInvalidSpy.mockRestore();
+
+    expect(res2.status).toBe(200);
+    expect(res2.body.stage).toBe('DECLINED');
+    expect(res2.body.activeVerification).toBeNull();
+    expect(res2.body.activeFlowCard.type).toBe('recovery');
+    expect(res2.body.activeFlowCard.code).toBe('RESPONSE_CODE_INVALID');
+    expect(res2.body.activeFlowCard.canRetryEudi).toBe(true);
   });
 });
