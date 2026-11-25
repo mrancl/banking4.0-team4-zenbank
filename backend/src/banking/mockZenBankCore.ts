@@ -70,6 +70,8 @@ export function createSeedCustomer(
       lastReconfirmedAt: null,
       addressVerified: false,
       incomeVerified: false,
+      eudiUpdateBlocked: false,
+      eudiBlockedReason: null,
     };
   }
 
@@ -90,6 +92,9 @@ export function createSeedCustomer(
       lastReconfirmedAt: null,
       addressVerified: false,
       incomeVerified: false,
+      eudiUpdateBlocked: true,
+      eudiBlockedReason:
+        'Contul tău necesită verificare suplimentară de conformitate în sucursală. Actualizarea automată prin EUDI Wallet nu este eligibilă pentru acest profil — te rugăm să programezi o vizită în sucursală sau să discuți cu un consilier ZenBank.',
     };
   }
 
@@ -109,6 +114,8 @@ export function createSeedCustomer(
     lastReconfirmedAt: null,
     addressVerified: false,
     incomeVerified: false,
+    eudiUpdateBlocked: false,
+    eudiBlockedReason: null,
   };
 }
 
@@ -247,7 +254,7 @@ export function checkCustomerAccountStatus(customer: ZenBankCustomerProfile): Ac
     dataUpdateRequired,
     paymentRestricted: customer.paymentRestricted,
     kycStatus: customer.kycStatus,
-    eudiRouteAvailable: true,
+    eudiRouteAvailable: !customer.eudiUpdateBlocked,
     missingItems,
     checks,
   };

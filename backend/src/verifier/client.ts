@@ -557,6 +557,8 @@ export class MockVerifierClient implements VerifierClient {
       format: 'dc+sd-jwt',
       documentType: 'urn:banking40:sandbox:address:1',
       claims: {
+        given_name: 'RADU',
+        family_name: 'STAN',
         address: {
           formatted: 'Strada Exemplului 13, 300001 Timișoara, România',
         },
@@ -579,6 +581,10 @@ export class MockVerifierClient implements VerifierClient {
       format: 'dc+sd-jwt',
       documentType: 'urn:banking40:sandbox:income:1',
       claims: {
+        subject: {
+          given_name: 'RADU',
+          family_name: 'STAN',
+        },
         monthly_income: {
           periods: [
             { month: '2026-05', net_amount_minor: 1622500 },
@@ -611,6 +617,10 @@ export class MockVerifierClient implements VerifierClient {
       format: 'dc+sd-jwt',
       documentType: 'urn:banking40:sandbox:income:1',
       claims: {
+        subject: {
+          given_name: 'RADU',
+          family_name: 'STAN',
+        },
         monthly_income: {
           periods: newIncome.claims.monthly_income.periods,
           currency: 'RON',

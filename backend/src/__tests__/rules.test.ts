@@ -63,6 +63,8 @@ describe('evaluateVerificationResult & claimsParser', () => {
         {
           documentType: 'urn:banking40:sandbox:address:1',
           claims: {
+            given_name: 'ALEX',
+            family_name: 'POPESCU',
             'address.street_address': 'Bulevardul Unirii 22',
             'address.locality': 'București',
             'address.postal_code': '030133',
@@ -211,13 +213,19 @@ describe('evaluateVerificationResult & claimsParser', () => {
         {
           type: 'ADDRESS',
           format: 'dc+sd-jwt',
-          claims: { 'address.formatted': 'Strada Exemplului 10, 010101 București, România' },
+          claims: {
+            given_name: 'ALEX',
+            family_name: 'POPESCU',
+            'address.formatted': 'Strada Exemplului 10, 010101 București, România',
+          },
           checks: { status: 'NOT_CHECKED' },
         },
         {
           type: 'INCOME_ATTESTATION',
           format: 'dc+sd-jwt',
           claims: {
+            'subject.given_name': 'ALEX',
+            'subject.family_name': 'POPESCU',
             'monthly_income.periods': [{ month: '2026-10', net_amount_minor: 1650000 }],
             'monthly_income.currency': 'RON',
             'monthly_income.income_type': 'salary',
@@ -286,6 +294,8 @@ describe('evaluateVerificationResult & claimsParser', () => {
           format: 'dc+sd-jwt',
           documentType: 'urn:banking40:sandbox:address:1',
           claims: {
+            given_name: 'RADU',
+            family_name: 'STAN',
             address: { formatted: 'Strada Exemplului 13, 300001 Timișoara, România' },
           },
           issuer: { country: 'RO', authority: 'Banking 4.0 Sandbox' },
@@ -302,6 +312,10 @@ describe('evaluateVerificationResult & claimsParser', () => {
           format: 'dc+sd-jwt',
           documentType: 'urn:banking40:sandbox:income:1',
           claims: {
+            subject: {
+              given_name: 'RADU',
+              family_name: 'STAN',
+            },
             monthly_income: {
               periods: [
                 { month: '2026-05', net_amount_minor: 1622500 },
@@ -417,7 +431,7 @@ describe('evaluateVerificationResult & claimsParser', () => {
     expect(res.verifiedIncome?.basisLabel).toContain('nu salariu lunar net');
   });
 
-  it('supports minimal address-only profile (qa-address-23) with ADDRESS attestation and no PID', () => {
+  it('supports minimal address-only profile (qa-address-23) with ADDRESS holder names and no PID', () => {
     const radu = createSeedCustomer('radu', 'data_update');
     const payload: DecryptedVerificationPayload = {
       schema: 'eudi-verification-result/v1',
@@ -429,6 +443,8 @@ describe('evaluateVerificationResult & claimsParser', () => {
           format: 'dc+sd-jwt',
           documentType: 'urn:banking40:sandbox:address:1',
           claims: {
+            given_name: 'RADU',
+            family_name: 'STAN',
             address: {
               formatted: 'Strada Exemplului 13, 300001 Timișoara, România',
             },
@@ -460,7 +476,7 @@ describe('evaluateVerificationResult & claimsParser', () => {
     expect(res.verifiedAddress?.streetAddress).toBe('Strada Exemplului 13');
     expect(res.verifiedIncome).toBeNull();
     expect(res.incomeDiff).toBeNull();
-    expect(res.checks.some((c) => c.id === 'zenbank_customer_binding' && c.status === 'INFO')).toBe(true);
+    expect(res.checks.some((c) => c.id === 'zenbank_customer_binding' && c.status === 'PASS')).toBe(true);
   });
 
   it('Scenario 1a: blocks update when all signatures/dates are valid but INCOME_ATTESTATION partial subject names differ from PID', () => {
@@ -691,6 +707,8 @@ describe('evaluateVerificationResult & claimsParser', () => {
           documentType: 'urn:banking40:sandbox:address:1',
           validUntil: '2026-11-25T12:00:00Z',
           claims: {
+            given_name: 'RADU',
+            family_name: 'STAN',
             address: { formatted: 'Strada Exemplului 13, 300001 Timișoara, România' },
           },
           checks: { issuerSignature: true, holderBinding: true, validity: true, trustedIssuer: true },
@@ -702,6 +720,7 @@ describe('evaluateVerificationResult & claimsParser', () => {
           validFrom: '2026-11-24T12:00:00Z',
           validUntil: '2026-11-24T12:02:00Z',
           claims: {
+            subject: { given_name: 'RADU', family_name: 'STAN' },
             monthly_income: {
               periods: [{ month: '2026-10', net_amount_minor: 1650000 }],
               currency: 'RON',
@@ -844,5 +863,182 @@ describe('evaluateVerificationResult & claimsParser', () => {
     expect(res.decision).toBe('UNHAPPY_PATH');
     expect(res.reasonCode).toBe('AGE_REQUIREMENT_NOT_SATISFIED');
     expect(res.verifiedIdentity).toBeNull();
+  });
+
+  it('fail-closed: blocks combined flow when INCOME_ATTESTATION lacks holder name attributes', () => {
+    const radu = createSeedCustomer('radu', 'data_update');
+    const payload: DecryptedVerificationPayload = {
+      schema: 'eudi-verification-result/v1',
+      transactionId: 'tx-missing-income-holder',
+      outcome: { status: 'SATISFIED', basis: 'DISCLOSURE' },
+      credentials: [
+        {
+          type: 'PID_RO_SANDBOX',
+          format: 'dc+sd-jwt',
+          documentType: 'urn:banking40:sandbox:pid-ro:1',
+          claims: { given_name: 'RADU', family_name: 'STAN', birthdate: '1986-06-08' },
+          checks: { issuerSignature: true, holderBinding: true, validity: true, trustedIssuer: true },
+        },
+        {
+          type: 'ADDRESS',
+          format: 'dc+sd-jwt',
+          documentType: 'urn:banking40:sandbox:address:1',
+          claims: {
+            given_name: 'RADU',
+            family_name: 'STAN',
+            address: { formatted: 'Strada Exemplului 13, 300001 Timișoara, România' },
+          },
+          checks: { issuerSignature: true, holderBinding: true, validity: true, trustedIssuer: true },
+        },
+        {
+          type: 'INCOME_ATTESTATION',
+          format: 'dc+sd-jwt',
+          documentType: 'urn:banking40:sandbox:income:1',
+          claims: {
+            monthly_income: {
+              periods: [{ month: '2026-10', net_amount_minor: 1650000 }],
+              currency: 'RON',
+            },
+          },
+          checks: { issuerSignature: true, holderBinding: true, validity: true, trustedIssuer: true },
+        },
+      ],
+    };
+
+    const res = evaluateVerificationResult({
+      customer: radu,
+      payload,
+      cryptoChecks: [],
+      acknowledged: true,
+      requestedScope: 'full',
+    });
+
+    expect(res.decision).toBe('SECURITY_BLOCKED');
+    expect(res.reasonCode).toBe('MISSING_CREDENTIAL_SUBJECT_BINDING');
+    expect(res.canConfirmAddressUpdate).toBe(false);
+    expect(res.canConfirmIncomeUpdate).toBe(false);
+    expect(res.canConfirmIdentityOnly).toBe(false);
+    expect(res.checks.some((c) => c.id === 'cross_credential_binding' && c.status === 'FAIL')).toBe(true);
+  });
+
+  it('fail-closed & mismatch: blocks minimal qa-income-23 when holder is missing or belongs to another customer', () => {
+    const radu = createSeedCustomer('radu', 'data_update');
+
+    const missingRes = evaluateVerificationResult({
+      customer: radu,
+      payload: {
+        schema: 'eudi-verification-result/v1',
+        transactionId: 'tx-income-missing-holder',
+        outcome: { status: 'SATISFIED', basis: 'DISCLOSURE' },
+        credentials: [
+          {
+            type: 'INCOME_ATTESTATION',
+            format: 'dc+sd-jwt',
+            documentType: 'urn:banking40:sandbox:income:1',
+            claims: {
+              monthly_income: {
+                periods: [{ month: '2026-10', net_amount_minor: 1650000 }],
+                currency: 'RON',
+              },
+            },
+            checks: { issuerSignature: true, holderBinding: true, validity: true, trustedIssuer: true },
+          },
+        ],
+      },
+      cryptoChecks: [],
+      acknowledged: true,
+      requestedScope: 'income',
+    });
+    expect(missingRes.decision).toBe('SECURITY_BLOCKED');
+    expect(missingRes.reasonCode).toBe('MISSING_CREDENTIAL_SUBJECT_BINDING');
+    expect(missingRes.canConfirmIncomeUpdate).toBe(false);
+
+    const mismatchRes = evaluateVerificationResult({
+      customer: radu,
+      payload: {
+        schema: 'eudi-verification-result/v1',
+        transactionId: 'tx-income-other-person',
+        outcome: { status: 'SATISFIED', basis: 'DISCLOSURE' },
+        credentials: [
+          {
+            type: 'INCOME_ATTESTATION',
+            format: 'dc+sd-jwt',
+            documentType: 'urn:banking40:sandbox:income:1',
+            claims: {
+              subject: { given_name: 'MARIA', family_name: 'IONESCU' },
+              monthly_income: {
+                periods: [{ month: '2026-10', net_amount_minor: 1650000 }],
+                currency: 'RON',
+              },
+            },
+            checks: { issuerSignature: true, holderBinding: true, validity: true, trustedIssuer: true },
+          },
+        ],
+      },
+      cryptoChecks: [],
+      acknowledged: true,
+      requestedScope: 'income',
+    });
+    expect(mismatchRes.decision).toBe('SECURITY_BLOCKED');
+    expect(mismatchRes.reasonCode).toBe('CUSTOMER_SUBJECT_MISMATCH');
+    expect(mismatchRes.canConfirmIncomeUpdate).toBe(false);
+  });
+
+  it('fail-closed & mismatch: blocks minimal qa-address-23 when holder is missing or belongs to another customer', () => {
+    const radu = createSeedCustomer('radu', 'data_update');
+
+    const missingRes = evaluateVerificationResult({
+      customer: radu,
+      payload: {
+        schema: 'eudi-verification-result/v1',
+        transactionId: 'tx-address-missing-holder',
+        outcome: { status: 'SATISFIED', basis: 'DISCLOSURE' },
+        credentials: [
+          {
+            type: 'ADDRESS',
+            format: 'dc+sd-jwt',
+            documentType: 'urn:banking40:sandbox:address:1',
+            claims: {
+              address: { formatted: 'Strada Exemplului 13, 300001 Timișoara, România' },
+            },
+            checks: { issuerSignature: true, holderBinding: true, validity: true, trustedIssuer: true },
+          },
+        ],
+      },
+      cryptoChecks: [],
+      acknowledged: true,
+      requestedScope: 'address',
+    });
+    expect(missingRes.decision).toBe('SECURITY_BLOCKED');
+    expect(missingRes.reasonCode).toBe('MISSING_CREDENTIAL_SUBJECT_BINDING');
+    expect(missingRes.canConfirmAddressUpdate).toBe(false);
+
+    const mismatchRes = evaluateVerificationResult({
+      customer: radu,
+      payload: {
+        schema: 'eudi-verification-result/v1',
+        transactionId: 'tx-address-other-person',
+        outcome: { status: 'SATISFIED', basis: 'DISCLOSURE' },
+        credentials: [
+          {
+            type: 'ADDRESS',
+            format: 'dc+sd-jwt',
+            documentType: 'urn:banking40:sandbox:address:1',
+            claims: {
+              given_name: 'MARIA',
+              family_name: 'IONESCU',
+              address: { formatted: 'Strada Exemplului 13, 300001 Timișoara, România' },
+            },
+            checks: { issuerSignature: true, holderBinding: true, validity: true, trustedIssuer: true },
+          },
+        ],
+      },
+      cryptoChecks: [],
+      acknowledged: true,
+      requestedScope: 'address',
+    });
+    expect(mismatchRes.decision).toBe('SECURITY_BLOCKED');
+    expect(mismatchRes.reasonCode).toBe('CUSTOMER_SUBJECT_MISMATCH');
+    expect(mismatchRes.canConfirmAddressUpdate).toBe(false);
   });
 });

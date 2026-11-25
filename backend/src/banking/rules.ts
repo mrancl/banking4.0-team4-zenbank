@@ -55,6 +55,13 @@ function findSubjectConflicts(
   return conflicts;
 }
 
+function hasHolderIdentityBinding(subject: PartialIdentitySubject | null): boolean {
+  if (!subject) {
+    return false;
+  }
+  return Boolean((subject.givenName && subject.familyName) || subject.personalNumericCode);
+}
+
 /**
  * Computes field-level diff between current ZenBank address and verified EUDI address.
  */
@@ -499,7 +506,7 @@ export function evaluateVerificationResult({
           decision: 'SECURITY_BLOCKED',
           reasonCode: 'CROSS_CREDENTIAL_SUBJECT_MISMATCH',
           message:
-            'Datele trimise din EUDI Wallet par să aparțină unor persoane diferite, așa că nu putem actualiza profilul.',
+            `Titularul pentru ${sec.label} nu corespunde cu identitatea din actul de identitate (${conflicts.join(', ')} diferă). Nu putem actualiza contul cu documentele altei persoane — profilul tău a rămas neschimbat.`,
           checks,
           verifiedIdentity: parsed.pidIdentity,
           verifiedAddress: null,
@@ -513,6 +520,38 @@ export function evaluateVerificationResult({
           canConfirmIdentityOnly: false,
         };
       }
+    }
+
+    const missingHolderLabels: string[] = [];
+    if (parsed.hasAddressCredential && !hasHolderIdentityBinding(parsed.addressSubject)) {
+      missingHolderLabels.push('atestarea de adresă');
+    }
+    if (parsed.hasIncomeCredential && !hasHolderIdentityBinding(parsed.incomeSubject)) {
+      missingHolderLabels.push('atestarea de venit');
+    }
+    if (missingHolderLabels.length > 0) {
+      checks.push({
+        id: 'cross_credential_binding',
+        label: 'Asociere între credențiale (PID ↔ Adresă / Venit)',
+        status: 'FAIL',
+        detail: `Lipsesc atributele de titular (prenume și nume) pe ${missingHolderLabels.join(' și ')}; actualizarea este blocată (fail-closed).`,
+      });
+      return {
+        decision: 'SECURITY_BLOCKED',
+        reasonCode: 'MISSING_CREDENTIAL_SUBJECT_BINDING',
+        message: `Nu putem verifica titularul pentru ${missingHolderLabels.join(' și ')} din EUDI Wallet. ZenBank verifică obligatoriu numele titularului pe fiecare document pentru a preveni actualizarea contului cu datele altei persoane.`,
+        checks,
+        verifiedIdentity: parsed.pidIdentity,
+        verifiedAddress: null,
+        verifiedIncome: null,
+        addressDiff: null,
+        incomeDiff: null,
+        withheldFields,
+        revocationStatus: revocationStatusEarly,
+        canConfirmAddressUpdate: false,
+        canConfirmIncomeUpdate: false,
+        canConfirmIdentityOnly: false,
+      };
     }
 
     if (secondarySubjects.length > 0) {
@@ -544,7 +583,7 @@ export function evaluateVerificationResult({
         decision: 'SECURITY_BLOCKED',
         reasonCode: 'CUSTOMER_SUBJECT_MISMATCH',
         message:
-          'Identitatea din EUDI Wallet nu corespunde titularului acestui cont ZenBank. Pentru siguranța ta, actualizarea a fost blocată.',
+          `Identitatea din EUDI Wallet nu corespunde titularului acestui cont ZenBank (${customerConflicts.join(', ')} diferă). Profilul tău a rămas neschimbat.`,
         checks,
         verifiedIdentity: parsed.pidIdentity,
         verifiedAddress: null,
@@ -579,7 +618,7 @@ export function evaluateVerificationResult({
           decision: 'SECURITY_BLOCKED',
           reasonCode: 'CROSS_CREDENTIAL_SUBJECT_MISMATCH',
           message:
-            'Datele trimise din EUDI Wallet par să aparțină unor persoane diferite, așa că nu putem actualiza profilul.',
+            `Titularul de pe atestarea de adresă și cel de pe atestarea de venit nu corespund (${secondaryConflicts.join(', ')} diferă). Nu putem actualiza contul cu documentele altei persoane — profilul tău a rămas neschimbat.`,
           checks,
           verifiedIdentity: parsed.pidIdentity,
           verifiedAddress: null,
@@ -615,7 +654,7 @@ export function evaluateVerificationResult({
           decision: 'SECURITY_BLOCKED',
           reasonCode: 'CUSTOMER_SUBJECT_MISMATCH',
           message:
-            'Identitatea din EUDI Wallet nu corespunde titularului acestui cont ZenBank. Pentru siguranța ta, actualizarea a fost blocată.',
+            `Titularul pentru ${entry.label} nu corespunde cu titularul acestui cont ZenBank (${conflicts.join(', ')} diferă). Profilul tău a rămas neschimbat.`,
           checks,
           verifiedIdentity: parsed.pidIdentity,
           verifiedAddress: null,
@@ -629,6 +668,38 @@ export function evaluateVerificationResult({
           canConfirmIdentityOnly: false,
         };
       }
+    }
+
+    const missingHolderLabels: string[] = [];
+    if (parsed.hasAddressCredential && !hasHolderIdentityBinding(parsed.addressSubject)) {
+      missingHolderLabels.push('atestarea de adresă');
+    }
+    if (parsed.hasIncomeCredential && !hasHolderIdentityBinding(parsed.incomeSubject)) {
+      missingHolderLabels.push('atestarea de venit');
+    }
+    if (missingHolderLabels.length > 0) {
+      checks.push({
+        id: 'zenbank_customer_binding',
+        label: 'Asociere identitate client ZenBank',
+        status: 'FAIL',
+        detail: `Lipsesc atributele de titular (prenume și nume) pe ${missingHolderLabels.join(' și ')}; actualizarea este blocată (fail-closed).`,
+      });
+      return {
+        decision: 'SECURITY_BLOCKED',
+        reasonCode: 'MISSING_CREDENTIAL_SUBJECT_BINDING',
+        message: `Nu putem verifica titularul pentru ${missingHolderLabels.join(' și ')} din EUDI Wallet. ZenBank verifică obligatoriu numele titularului pe fiecare document pentru a preveni actualizarea contului cu datele altei persoane.`,
+        checks,
+        verifiedIdentity: parsed.pidIdentity,
+        verifiedAddress: null,
+        verifiedIncome: null,
+        addressDiff: null,
+        incomeDiff: null,
+        withheldFields,
+        revocationStatus: revocationStatusEarly,
+        canConfirmAddressUpdate: false,
+        canConfirmIncomeUpdate: false,
+        canConfirmIdentityOnly: false,
+      };
     }
   }
 
@@ -823,10 +894,10 @@ export function evaluateVerificationResult({
 
       checks.push({
         id: 'zenbank_customer_binding',
-        label: 'Profil minimal de venit',
-        status: 'INFO',
+        label: 'Asociere titular venit (qa-income-23)',
+        status: 'PASS',
         detail:
-          'Profil minimal (qa-income-23): titularul este deja autentificat în ZenBank; s-au solicitat strict datele de venit.',
+          'Titularul din atestarea de venit (prenume și nume) corespunde cu clientul ZenBank autentificat.',
       });
     } else if (scope === 'address') {
       if (
@@ -861,10 +932,10 @@ export function evaluateVerificationResult({
 
       checks.push({
         id: 'zenbank_customer_binding',
-        label: 'Profil minimal de adresă',
-        status: 'INFO',
+        label: 'Asociere titular adresă (qa-address-23)',
+        status: 'PASS',
         detail:
-          'Profil minimal (qa-address-23): titularul este deja autentificat în ZenBank; s-a solicitat strict atestarea de adresă.',
+          'Titularul din atestarea de adresă (prenume și nume) corespunde cu clientul ZenBank autentificat.',
       });
     } else {
       checks.push({

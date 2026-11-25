@@ -1,0 +1,997 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ZenBank EUDI Data Update — Team 04 Pitch Deck</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css" />
+  <style>
+    :root {
+      --bg-stage: #06090f;
+      --bg-page: #0b1118;
+      --bg-card: #121b25;
+      --bg-elevated: #172330;
+      --border: rgba(255, 255, 255, 0.085);
+      --border-strong: rgba(255, 255, 255, 0.14);
+      --text-main: #f1f5f9;
+      --text-muted: #94a3b8;
+      --zen-primary: #f97316;
+      --zen-primary-hover: #ea580c;
+      --zen-on-primary: #1c0a00;
+      --zen-soft: rgba(249, 115, 22, 0.13);
+      --zen-border-accent: rgba(251, 146, 60, 0.36);
+      --green: #34d399;
+      --green-soft: rgba(16, 185, 129, 0.13);
+      --green-border: rgba(52, 211, 153, 0.34);
+      --amber: #fbbf24;
+      --amber-soft: rgba(245, 158, 11, 0.14);
+      --amber-border: rgba(251, 191, 36, 0.36);
+      --red: #f87171;
+      --red-soft: rgba(239, 68, 68, 0.14);
+      --red-border: rgba(248, 113, 113, 0.34);
+    }
+
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      background: var(--bg-stage);
+      color: var(--text-main);
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .reveal {
+      background:
+        radial-gradient(960px 540px at 88% -8%, rgba(249, 115, 22, 0.16), transparent 62%),
+        radial-gradient(760px 520px at 8% 105%, rgba(52, 211, 153, 0.08), transparent 58%),
+        linear-gradient(160deg, var(--bg-stage) 0%, var(--bg-page) 55%, #090e15 100%);
+      color: var(--text-main);
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      font-size: 22px;
+    }
+
+    .reveal .slides {
+      text-align: left;
+    }
+
+    .reveal .slides > section {
+      height: 100%;
+      padding: 28px 42px 34px;
+      display: flex !important;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    .reveal h1,
+    .reveal h2,
+    .reveal h3 {
+      font-family: 'Plus Jakarta Sans', 'Inter', sans-serif;
+      color: var(--text-main);
+      margin: 0;
+      letter-spacing: -0.025em;
+      line-height: 1.14;
+    }
+
+    .reveal p {
+      margin: 0;
+      line-height: 1.45;
+    }
+
+    /* Slide chrome */
+    .slide-topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding-bottom: 14px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    .topbar-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      padding: 5px 13px;
+      border-radius: 999px;
+      background: var(--zen-soft);
+      border: 1px solid var(--zen-border-accent);
+      color: #fdba74;
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+    }
+
+    .eyebrow.green {
+      background: var(--green-soft);
+      border-color: var(--green-border);
+      color: var(--green);
+    }
+
+    .timing-pill {
+      display: inline-flex;
+      align-items: center;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-strong);
+      color: var(--text-muted);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      font-weight: 500;
+    }
+
+    .brand-mini {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      color: var(--text-main);
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      font-size: 16px;
+      font-weight: 700;
+    }
+
+    .brand-mark {
+      width: 28px;
+      height: 28px;
+      border-radius: 8px;
+      background: linear-gradient(135deg, var(--zen-primary) 0%, #fb923c 100%);
+      color: var(--zen-on-primary);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 800;
+      font-size: 15px;
+      box-shadow: 0 4px 14px rgba(249, 115, 22, 0.32);
+    }
+
+    .slide-title-wrap {
+      margin-top: 18px;
+      margin-bottom: 18px;
+      flex-shrink: 0;
+    }
+
+    .slide-title {
+      font-size: 42px;
+      font-weight: 800;
+    }
+
+    .slide-subtitle {
+      margin-top: 8px;
+      font-size: 19px;
+      color: var(--text-muted);
+    }
+
+    .slide-body {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 20px;
+      min-height: 0;
+    }
+
+    .slide-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding-top: 10px;
+      font-size: 13px;
+      color: var(--text-muted);
+      flex-shrink: 0;
+    }
+
+    /* Cards & tags */
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 24px 26px;
+      box-shadow: 0 12px 30px rgba(0, 0, 0, 0.24);
+    }
+
+    .card.elevated {
+      background: var(--bg-elevated);
+      border-color: var(--border-strong);
+    }
+
+    .card.accent-orange {
+      background: linear-gradient(180deg, rgba(249, 115, 22, 0.13) 0%, var(--bg-card) 58%);
+      border-color: var(--zen-border-accent);
+    }
+
+    .card.accent-green {
+      background: linear-gradient(180deg, rgba(16, 185, 129, 0.13) 0%, var(--bg-card) 58%);
+      border-color: var(--green-border);
+    }
+
+    .card.accent-red {
+      background: linear-gradient(180deg, rgba(239, 68, 68, 0.10) 0%, var(--bg-card) 58%);
+      border-color: var(--red-border);
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      padding: 4px 11px;
+      border-radius: 999px;
+      font-size: 12.5px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+
+    .tag.orange {
+      background: var(--zen-soft);
+      color: #fdba74;
+      border: 1px solid var(--zen-border-accent);
+    }
+
+    .tag.green {
+      background: var(--green-soft);
+      color: var(--green);
+      border: 1px solid var(--green-border);
+    }
+
+    .tag.amber {
+      background: var(--amber-soft);
+      color: var(--amber);
+      border: 1px solid var(--amber-border);
+    }
+
+    .tag.red {
+      background: var(--red-soft);
+      color: var(--red);
+      border: 1px solid var(--red-border);
+    }
+
+    .tag.muted {
+      background: rgba(148, 163, 184, 0.12);
+      color: var(--text-muted);
+      border: 1px solid var(--border-strong);
+    }
+
+    .mono {
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .accent-text {
+      color: var(--zen-primary);
+    }
+
+    .green-text {
+      color: var(--green);
+    }
+
+    /* Slide 1: Hero + Today vs ZenBank */
+    .hero-title {
+      font-size: 50px !important;
+      font-weight: 800;
+      line-height: 1.1 !important;
+      max-width: 1080px;
+    }
+
+    .compare-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 22px;
+      align-items: stretch;
+    }
+
+    .compare-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+    }
+
+    .compare-head h3 {
+      font-size: 24px;
+      font-weight: 700;
+    }
+
+    .chip-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    .stat-tile {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px 18px;
+      font-size: 20px;
+      font-weight: 700;
+      color: var(--text-main);
+    }
+
+    .stat-tile.muted {
+      color: #cbd5e1;
+      font-weight: 600;
+    }
+
+    .stat-tile.win {
+      border-color: var(--zen-border-accent);
+      color: #fdba74;
+    }
+
+    /* Slide 2: 5-step horizontal journey */
+    .journey-row {
+      display: grid;
+      grid-template-columns: 1fr 24px 1fr 24px 1fr 24px 1fr 24px 1fr;
+      align-items: stretch;
+      gap: 8px;
+    }
+
+    .step-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 22px 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .step-card.highlight {
+      border-color: var(--zen-border-accent);
+      background: linear-gradient(180deg, rgba(249, 115, 22, 0.12) 0%, var(--bg-card) 60%);
+    }
+
+    .step-num {
+      width: 38px;
+      height: 38px;
+      border-radius: 50%;
+      background: var(--zen-primary);
+      color: var(--zen-on-primary);
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      font-weight: 800;
+      font-size: 18px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 4px 12px rgba(249, 115, 22, 0.3);
+    }
+
+    .step-title {
+      font-size: 21px;
+      font-weight: 700;
+    }
+
+    .step-desc {
+      font-size: 16.5px;
+      color: var(--text-muted);
+      line-height: 1.45;
+    }
+
+    .flow-arrow {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--zen-primary);
+      font-size: 24px;
+      font-weight: 700;
+    }
+
+    .callout-strip {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      padding: 18px 24px;
+      border-radius: 14px;
+      background: linear-gradient(90deg, rgba(249, 115, 22, 0.16), rgba(245, 158, 11, 0.09));
+      border: 1px solid var(--zen-border-accent);
+      font-size: 19px;
+    }
+
+    /* Slide 3: 3-tier ladder */
+    .tier-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 22px;
+      align-items: stretch;
+    }
+
+    .tier-card {
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 28px 26px;
+    }
+
+    .tier-title {
+      font-size: 26px;
+      font-weight: 800;
+      margin-top: 10px;
+    }
+
+    .tier-copy {
+      font-size: 18px;
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+
+    .tier-meta {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px 14px;
+      font-size: 15.5px;
+      color: var(--text-main);
+    }
+
+    .never-bar {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 15px 20px;
+      border-radius: 14px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-strong);
+      font-size: 17px;
+      color: var(--text-muted);
+    }
+
+    .never-bar strong {
+      color: var(--text-main);
+    }
+
+    /* Slide 4: Live Demo */
+    .demo-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 22px;
+      align-items: stretch;
+    }
+
+    .demo-card {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      padding: 28px 26px;
+    }
+
+    .demo-num {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      font-size: 34px;
+      font-weight: 800;
+      color: var(--zen-primary);
+      line-height: 1;
+    }
+
+    .demo-card.accent-green .demo-num {
+      color: var(--green);
+    }
+
+    .demo-title {
+      font-size: 25px;
+      font-weight: 700;
+    }
+
+    .demo-copy {
+      font-size: 18px;
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+
+    .demo-url-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 14px 20px;
+      border-radius: 14px;
+      background: var(--bg-card);
+      border: 1px solid var(--border-strong);
+      font-size: 15px;
+    }
+
+    /* Slide 5: Impact & Go-Live */
+    .closing-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 22px;
+      align-items: stretch;
+    }
+
+    .big-stats {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      margin-top: 14px;
+    }
+
+    .big-stat-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 13px 16px;
+      border-radius: 12px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      font-size: 18px;
+    }
+
+    .caveat-box {
+      margin-top: 14px;
+      padding: 14px 16px;
+      border-radius: 12px;
+      background: var(--amber-soft);
+      border: 1px solid var(--amber-border);
+      font-size: 15.5px;
+      color: var(--text-main);
+      line-height: 1.45;
+    }
+
+    .status-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      margin-top: 14px;
+    }
+
+    .status-block {
+      padding: 13px 16px;
+      border-radius: 12px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      font-size: 16.5px;
+      color: var(--text-muted);
+      line-height: 1.45;
+    }
+
+    .status-block strong {
+      color: var(--text-main);
+    }
+
+    /* Reveal controls & progress */
+    .reveal .progress {
+      color: var(--zen-primary);
+      height: 4px;
+    }
+
+    .reveal .controls {
+      color: var(--zen-primary);
+    }
+
+    .reveal .slide-number {
+      background: rgba(18, 27, 37, 0.85);
+      border: 1px solid var(--border-strong);
+      border-radius: 8px;
+      color: var(--text-muted);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      padding: 4px 9px;
+      right: 18px;
+      bottom: 14px;
+    }
+
+    @media print {
+      .reveal {
+        background: var(--bg-page) !important;
+      }
+      .card {
+        box-shadow: none !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="reveal">
+    <div class="slides">
+
+      <!-- SLIDE 1: TITLE, PROBLEM & PROMISE -->
+      <section>
+        <div class="slide-topbar">
+          <div class="topbar-left">
+            <span class="eyebrow">Banking 4.0 Hackathon · Team 04</span>
+            <span class="timing-pill">0:00 – 1:00</span>
+          </div>
+          <div class="brand-mini">
+            <span class="brand-mark">Z</span>
+            <span>ZenBank</span>
+          </div>
+        </div>
+
+        <div class="slide-body" style="gap: 24px;">
+          <div>
+            <h1 class="hero-title">
+              Update Bank KYC in <span class="accent-text">20 Seconds</span> — Without Uploading a Document
+            </h1>
+            <p class="slide-subtitle">
+              Built for everyday retail customers like <strong>Radu Stan</strong> whose outdated KYC blocks payments.
+            </p>
+          </div>
+
+          <div class="compare-grid">
+            <div class="card accent-red">
+              <div class="compare-head">
+                <h3>Today</h3>
+                <span class="tag red">Slow &amp; Manual</span>
+              </div>
+              <div class="chip-grid">
+                <div class="stat-tile muted">~12 manual fields</div>
+                <div class="stat-tile muted">2–3 PDF uploads</div>
+                <div class="stat-tile muted">1–3 day wait</div>
+                <div class="stat-tile muted">Blocked payments</div>
+              </div>
+            </div>
+
+            <div class="card accent-orange">
+              <div class="compare-head">
+                <h3>With ZenBank EUDI</h3>
+                <span class="tag green">Verified Instant</span>
+              </div>
+              <div class="chip-grid">
+                <div class="stat-tile win">0 typing</div>
+                <div class="stat-tile win">0 uploads</div>
+                <div class="stat-tile win">~20 sec update</div>
+                <div class="stat-tile win">Instant unlock</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="slide-footer">
+          <span>ZenBank EUDI Data Update</span>
+          <span class="mono">Press S for Speaker Notes</span>
+        </div>
+
+        <aside class="notes">
+          Timing: 0:00–1:00.
+          Introduce Radu Stan, a regular EU retail customer. When his address or periodic KYC is outdated, outbound payments freeze.
+          Today that means ~12 manual form fields, hunting for utility bills and payslips, and waiting 1–3 days.
+          With ZenBank EUDI: zero typing, zero PDF uploads, ~20 seconds end to end, and instant unlock.
+        </aside>
+      </section>
+
+      <!-- SLIDE 2: CUSTOMER JOURNEY & BUSINESS FLOW -->
+      <section>
+        <div class="slide-topbar">
+          <div class="topbar-left">
+            <span class="eyebrow">01 · Customer Journey</span>
+            <span class="timing-pill">1:00 – 2:15</span>
+          </div>
+          <div class="brand-mini">
+            <span class="brand-mark">Z</span>
+            <span>ZenBank</span>
+          </div>
+        </div>
+
+        <div class="slide-title-wrap">
+          <h2 class="slide-title">One Simple Flow, End to End</h2>
+          <p class="slide-subtitle">Clear consent before sharing — explicit confirmation before saving.</p>
+        </div>
+
+        <div class="slide-body">
+          <div class="journey-row">
+            <div class="step-card">
+              <div class="step-num">1</div>
+              <div class="step-title">Trigger</div>
+              <div class="step-desc"><em>Datele mele</em> or <em>ZenBank Chat</em></div>
+            </div>
+
+            <div class="flow-arrow">&rarr;</div>
+
+            <div class="step-card">
+              <div class="step-num">2</div>
+              <div class="step-title">Pre-Consent</div>
+              <div class="step-desc">Clear <em>what</em> &amp; <em>why</em> before wallet opens</div>
+            </div>
+
+            <div class="flow-arrow">&rarr;</div>
+
+            <div class="step-card highlight">
+              <div class="step-num">3</div>
+              <div class="step-title">Wallet Share</div>
+              <div class="step-desc">One-tap PIN &amp; automatic return</div>
+            </div>
+
+            <div class="flow-arrow">&rarr;</div>
+
+            <div class="step-card">
+              <div class="step-num">4</div>
+              <div class="step-title">Review Diff</div>
+              <div class="step-desc">Bank checks identity &amp; freshness</div>
+            </div>
+
+            <div class="flow-arrow">&rarr;</div>
+
+            <div class="step-card">
+              <div class="step-num">5</div>
+              <div class="step-title">Confirm</div>
+              <div class="step-desc">Profile saves &amp; payments unlock</div>
+            </div>
+          </div>
+
+          <div class="callout-strip">
+            <div>
+              <strong style="color: #fdba74;">Sharing is not approval</strong> — Bank rules + explicit customer confirmation decide the outcome.
+            </div>
+            <span class="tag orange">Customer Control</span>
+          </div>
+        </div>
+
+        <div class="slide-footer">
+          <span>Self-service Profile or Guided Chat</span>
+          <span>ZenBank EUDI Data Update</span>
+        </div>
+
+        <aside class="notes">
+          Timing: 1:00–2:15.
+          Walk the 5 steps left-to-right: Trigger (Datele mele or Chat) → plain-language Pre-Consent telling the customer what and why → one-tap Wallet Share with PIN and auto-return → Bank validation & side-by-side diff → Explicit Confirm.
+          Emphasize: Sharing is not approval. The wallet proves facts; bank rules and explicit customer confirmation decide what changes.
+        </aside>
+      </section>
+
+      <!-- SLIDE 3: ASK ONLY WHAT YOU NEED -->
+      <section>
+        <div class="slide-topbar">
+          <div class="topbar-left">
+            <span class="eyebrow green">02 · Data Minimization</span>
+            <span class="timing-pill">2:15 – 3:10</span>
+          </div>
+          <div class="brand-mini">
+            <span class="brand-mark">Z</span>
+            <span>ZenBank</span>
+          </div>
+        </div>
+
+        <div class="slide-title-wrap">
+          <h2 class="slide-title">Right-Sized Data for Every Decision</h2>
+          <p class="slide-subtitle">Three verification levels — never asking for more than the banking action requires.</p>
+        </div>
+
+        <div class="slide-body">
+          <div class="tier-grid">
+            <div class="card accent-green tier-card">
+              <div>
+                <span class="tag green">Zero PII</span>
+                <h3 class="tier-title">18+ Check</h3>
+                <p class="tier-copy" style="margin-top: 12px;">
+                  Strictly <strong>Yes / No</strong> in Chat via <em>„Verifică eligibilitatea 18+”</em>.
+                </p>
+              </div>
+              <div class="tier-meta">Profile stays 100% untouched</div>
+            </div>
+
+            <div class="card accent-orange tier-card">
+              <div>
+                <span class="tag orange">Minimal</span>
+                <h3 class="tier-title">Single Field</h3>
+                <p class="tier-copy" style="margin-top: 12px;">
+                  Updates residential address <strong>or</strong> income band only.
+                </p>
+              </div>
+              <div class="tier-meta">Unrelated fields never requested</div>
+            </div>
+
+            <div class="card elevated tier-card">
+              <div>
+                <span class="tag muted">Complete</span>
+                <h3 class="tier-title">Full KYC</h3>
+                <p class="tier-copy" style="margin-top: 12px;">
+                  Identity + Address + Income band to unlock payments.
+                </p>
+              </div>
+              <div class="tier-meta">One tap replaces 3 uploads</div>
+            </div>
+          </div>
+
+          <div class="never-bar">
+            <span class="tag red">Never Stored</span>
+            <span><strong>CNP</strong> (national ID number), <strong>place of birth</strong>, or <strong>raw monthly salary</strong>.</span>
+          </div>
+        </div>
+
+        <div class="slide-footer">
+          <span>Proportional disclosure by design</span>
+          <span>ZenBank EUDI Data Update</span>
+        </div>
+
+        <aside class="notes">
+          Timing: 2:15–3:10.
+          Explain our 3 levels:
+          1. 18+ Check: strictly Yes/No in Chat, 0 personal data shared, profile untouched.
+          2. Single Field: update just address OR just income band.
+          3. Full KYC: identity + address + income band to unlock blocked transfers.
+          Highlight what we always drop: CNP, place of birth, and raw monthly salary amounts.
+        </aside>
+      </section>
+
+      <!-- SLIDE 4: LIVE DEMO -->
+      <section>
+        <div class="slide-topbar">
+          <div class="topbar-left">
+            <span class="eyebrow">03 · Live Demo</span>
+            <span class="timing-pill">3:10 – 6:15</span>
+          </div>
+          <div class="brand-mini">
+            <span class="brand-mark">Z</span>
+            <span>ZenBank</span>
+          </div>
+        </div>
+
+        <div class="slide-title-wrap">
+          <h2 class="slide-title">Live Demo: 3 Quick Scenarios</h2>
+          <p class="slide-subtitle">Running live on mobile &amp; cloud with real EUDI Wallet credentials.</p>
+        </div>
+
+        <div class="slide-body">
+          <div class="demo-grid">
+            <div class="card accent-orange demo-card">
+              <div class="demo-num">01</div>
+              <h3 class="demo-title">Happy Path</h3>
+              <p class="demo-copy">
+                Full KYC update in ~20 sec with same-device auto-return.
+              </p>
+            </div>
+
+            <div class="card accent-green demo-card">
+              <div class="demo-num">02</div>
+              <h3 class="demo-title">Chat &amp; 18+</h3>
+              <p class="demo-copy">
+                Blocked-payment help + zero-PII 18+ check (<em>AI sees 0 PII</em>).
+              </p>
+            </div>
+
+            <div class="card demo-card">
+              <div class="demo-num">03</div>
+              <h3 class="demo-title">Safeguards</h3>
+              <p class="demo-copy">
+                Wrong person blocked · Cancel leaves profile untouched · Expired income proof recovers safely.
+              </p>
+            </div>
+          </div>
+
+          <div class="demo-url-bar">
+            <div>
+              <strong>Live App:</strong>
+              <span class="mono" style="color: #fdba74; margin-left: 8px;">https://zenbank-eudi-825682833200.europe-west1.run.app</span>
+            </div>
+            <span class="tag green">Android App · Auto-Return</span>
+          </div>
+        </div>
+
+        <div class="slide-footer">
+          <span>Switch to live demo now (~3 min)</span>
+          <span>ZenBank EUDI Data Update</span>
+        </div>
+
+        <aside class="notes">
+          Timing: 3:10–6:15.
+          Switch to phone/browser demo and run the 3 acts:
+          01 Happy Path: Datele mele → Wallet PIN → auto-return → side-by-side diff → Confirm.
+          02 Chat & 18+: Ask "De ce nu pot iniția o plată?" then tap "Verifică eligibilitatea 18+". Note that the AI sees 0 PII.
+          03 Safeguards: Maria Ionescu's wallet rejected on Radu Stan's account, Cancel/Decline leaves profile untouched, and expired income proof preserves verified address.
+        </aside>
+      </section>
+
+      <!-- SLIDE 5: IMPACT, CAVEATS & PATH TO PRODUCTION -->
+      <section>
+        <div class="slide-topbar">
+          <div class="topbar-left">
+            <span class="eyebrow">04 · Impact &amp; Go-Live</span>
+            <span class="timing-pill">6:15 – 8:00</span>
+          </div>
+          <div class="brand-mini">
+            <span class="brand-mark">Z</span>
+            <span>ZenBank</span>
+          </div>
+        </div>
+
+        <div class="slide-title-wrap">
+          <h2 class="slide-title">Impact, Caveats &amp; Real-World Go-Live</h2>
+          <p class="slide-subtitle">Measurable customer value today, with a clear regulatory path to bank production.</p>
+        </div>
+
+        <div class="slide-body">
+          <div class="closing-grid">
+            <div class="card">
+              <div style="display: flex; align-items: center; justify-content: space-between;">
+                <h3 style="font-size: 22px;">Business Impact</h3>
+                <span class="tag green">Before → After</span>
+              </div>
+
+              <div class="big-stats">
+                <div class="big-stat-row">
+                  <span style="color: var(--text-muted);">1–3 days</span>
+                  <strong class="green-text">&rarr; ~20 sec</strong>
+                </div>
+                <div class="big-stat-row">
+                  <span style="color: var(--text-muted);">2–3 PDFs</span>
+                  <strong class="green-text">&rarr; 0 uploads</strong>
+                </div>
+                <div class="big-stat-row">
+                  <span style="color: var(--text-muted);">Editable files</span>
+                  <strong class="green-text">&rarr; Issuer-verified</strong>
+                </div>
+              </div>
+
+              <div class="caveat-box">
+                <strong>Income caveat:</strong> Annual/past-period attestations map to <em>KYC brackets only</em> — not monthly net pay or active employment.
+              </div>
+            </div>
+
+            <div class="card accent-orange">
+              <div style="display: flex; align-items: center; justify-content: space-between;">
+                <h3 style="font-size: 22px;">Live Today vs. Production</h3>
+                <span class="tag orange">Roadmap</span>
+              </div>
+
+              <div class="status-stack">
+                <div class="status-block">
+                  <strong style="color: var(--green);">Live:</strong> EUDI Wallet + Verifier, web &amp; Android app, all 4 profiles, mismatch/cancel/expiry safeguards.
+                </div>
+                <div class="status-block">
+                  <strong style="color: var(--amber);">Simulated:</strong> Core banking ledger &amp; static KYC thresholds.
+                </div>
+                <div class="status-block">
+                  <strong style="color: #fdba74;">Next for Production:</strong> eIDAS 2 RP &amp; EU Trusted Lists · Live revocation · AML/PEP escalation · GDPR audit &amp; PSD2 SCA.
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="slide-footer">
+          <span>Thank you · Ready for Q&amp;A (4 min)</span>
+          <span>Banking 4.0 Hackathon · Team 04</span>
+        </div>
+
+        <aside class="notes">
+          Timing: 6:15–8:00.
+          Wrap up cleanly: 1–3 days → ~20 sec, 2–3 PDFs → 0 uploads, editable files → issuer-verified.
+          State the income caveat clearly: annual/past tax income maps to KYC brackets only, not current monthly net pay or employment status.
+          Q&A cheat sheet:
+          1. Trust checks: issuer verification + wallet-to-customer identity binding + proof expiry + explicit Confirm.
+          2. Wallet decline: clean cancellation banner, profile 100% untouched.
+          3. Dropped attributes: 18+ drops all PII (Yes/No); all flows drop CNP, birthplace, and raw monthly salary.
+          4. Production additions: eIDAS 2 RP registration, EU Trusted Lists, live revocation, AML/PEP escalation, GDPR audit logs, PSD2 SCA.
+        </aside>
+      </section>
+
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/plugin/notes/notes.js"></script>
+  <script>
+    Reveal.initialize({
+      width: 1280,
+      height: 720,
+      margin: 0.04,
+      center: false,
+      hash: true,
+      slideNumber: 'c/t',
+      controls: true,
+      progress: true,
+      transition: 'slide',
+      plugins: [RevealNotes]
+    });
+  </script>
+</body>
+</html>

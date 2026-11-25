@@ -4,6 +4,7 @@ import {
   ArrowRight,
   BriefcaseBusiness,
   CheckCircle2,
+  ChevronDown,
   ChevronRight,
   CreditCard,
   FileBadge2,
@@ -196,8 +197,48 @@ export function HomeTab({
         </section>
       )}
 
+      {customer.eudiUpdateBlocked && (
+        <section className="restriction-card">
+          <div className="restriction-card-head">
+            <ShieldAlert size={18} color="var(--amber)" style={{ flexShrink: 0, marginTop: 1 }} />
+            <div>
+              <div className="restriction-card-title">Actualizare EUDI indisponibilă pentru acest cont</div>
+              <p className="restriction-card-text">
+                {customer.eudiBlockedReason ||
+                  'Contul necesită verificare suplimentară în sucursală; actualizarea prin EUDI Wallet nu este disponibilă.'}
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            className="btn btn-secondary btn-block"
+            disabled={loading}
+            onClick={onOpenChat}
+          >
+            <MessageCircle size={15} />
+            <span>Întreabă în Chat</span>
+          </button>
+        </section>
+      )}
+
       <section className="mobile-section">
         <div className="mobile-section-title">Datele tale în ZenBank</div>
+        {!isUpToDate && (
+          <details className="policy-details policy-details-compact">
+            <summary className="policy-summary">
+              <span className="policy-summary-left">
+                <ShieldCheck size={13} color="var(--zen-primary)" />
+                <span>De ce este necesară actualizarea datelor?</span>
+              </span>
+              <ChevronDown size={14} className="policy-chevron" />
+            </summary>
+            <div className="policy-body">
+              <p className="policy-text">
+                Actualizarea periodică este necesară conform cerințelor bancare (KYC) pentru a păstra contul și plățile active.
+              </p>
+            </div>
+          </details>
+        )}
         <div className="mobile-group">
           <button
             type="button"
@@ -214,7 +255,9 @@ export function HomeTab({
                 {addressUpdatedFlag ? (
                   <span className="badge badge-green">Actualizat</span>
                 ) : (
-                  <span className="group-action-hint">Actualizează</span>
+                  <span className="group-action-hint">
+                    {customer.eudiUpdateBlocked ? 'Necesită sucursală' : 'Actualizează'}
+                  </span>
                 )}
               </div>
               <div className="group-primary">{customer.currentAddress.streetAddress}</div>
@@ -241,7 +284,9 @@ export function HomeTab({
                 {incomeUpdatedFlag ? (
                   <span className="badge badge-green">Actualizat</span>
                 ) : (
-                  <span className="group-action-hint">Actualizează</span>
+                  <span className="group-action-hint">
+                    {customer.eudiUpdateBlocked ? 'Necesită sucursală' : 'Actualizează'}
+                  </span>
                 )}
               </div>
               <div className="group-primary">
@@ -265,7 +310,11 @@ export function HomeTab({
         </div>
         <div className="cta-feature-body">
           <div className="cta-feature-title">Actualizează-mi datele personale</div>
-          <div className="cta-feature-sub">Rapid cu EUDI Wallet · Fără documente</div>
+          <div className="cta-feature-sub">
+            {customer.eudiUpdateBlocked
+              ? 'Indisponibil prin EUDI Wallet · Necesită sucursală'
+              : 'Rapid cu EUDI Wallet · Fără documente'}
+          </div>
         </div>
         <ChevronRight size={18} color="var(--text-muted)" />
       </button>

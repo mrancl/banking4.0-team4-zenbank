@@ -16,7 +16,7 @@ interface HeaderBarProps {
 
 const CUSTOMER_OPTIONS: Array<{ id: CustomerId; name: string; subtitle: string }> = [
   { id: 'radu', name: 'Radu Stan', subtitle: 'Client principal · Wallet live' },
-  { id: 'alex', name: 'Alex Popescu', subtitle: 'Profil alternativ' },
+  { id: 'alex', name: 'Alex Popescu', subtitle: 'Blocat de bancă · Fără EUDI self-service' },
   { id: 'maria', name: 'Maria Ionescu', subtitle: 'Test identitate diferită' },
 ];
 

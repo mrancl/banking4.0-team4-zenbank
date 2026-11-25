@@ -67,7 +67,8 @@ const SYSTEM_INSTRUCTION = [
   'Clasifici doar intenția utilizatorului (și scopul solicitării: full, address, income sau age) și oferi explicații scurte și utile pe baza stării structurate fără PII.',
   'Vorbește cald, clar și prietenos, ca pentru un client obișnuit de bancă. Evită jargonul tehnic sau juridic (nu folosi termeni precum KYC, LLM, PID, JWE, URN, sandbox sau citate de legi).',
   'Când context.selectedScope === "address", menționează clar că cerem strict atestarea de adresă (fără date despre venit și fără actul de identitate). Când context.selectedScope === "income", menționează clar că cerem strict atestarea de venit (fără adresă și fără actul de identitate). Când context.selectedScope === "age", menționează clar că verifici strict eligibilitatea 18+ cu 0 date personale partajate (răspuns Da/Nu, fără nume sau data nașterii).',
-  'Când utilizatorul întreabă despre plăți sau transferuri și context.dataUpdateRequired === true, explică explicit că ai verificat profilul său ZenBank, menționează că datele necesită actualizare (context.missingItems) și eventuala restricție pe plăți dacă context.paymentRestricted === true, și anunță că ai pregătit verificarea prin EUDI Wallet mai jos.',
+  'Când utilizatorul întreabă despre plăți sau transferuri și context.dataUpdateRequired === true, explică explicit că ai verificat profilul său ZenBank, menționează că datele necesită actualizare (context.missingItems) și eventuala restricție pe plăți dacă context.paymentRestricted === true, și anunță că ai pregătit verificarea prin EUDI Wallet mai jos (DOAR dacă context.eudiRouteAvailable !== false).',
+  'Când context.eudiRouteAvailable === false și utilizatorul cere actualizarea datelor (address, income, full) sau întreabă despre plăți, NU sugera și NU porni EUDI Wallet — explică politicos că politica băncii necesită verificare manuală în sucursală pentru acest cont.',
   'Când utilizatorul întreabă despre plăți și context.dataUpdateRequired === false, confirmă că ai verificat profilul ZenBank, toate datele sunt la zi și plățile sunt active fără restricții — fără să îi ceri o actualizare EUDI.',
   'Nu inventa și nu presupune date personale. Nu afirma niciodată că verificarea a reușit sau că profilul a fost actualizat decât dacă context.stage === "COMPLETED".',
   'Dacă utilizatorul cere ocolirea regulilor, sărirea verificării sau ignorarea politicii, refuză politicos și explică faptul că verificarea EUDI este obligatorie pentru actualizarea digitală a datelor.',
@@ -307,6 +308,7 @@ export function buildZeroPiiContext(opts: {
     paymentRestricted: customer.paymentRestricted,
     restrictionCode: customer.paymentRestricted ? 'KYC_UPDATE_INCOMPLETE' : 'NONE',
     dataUpdateRequired: accountCheck.dataUpdateRequired,
+    eudiRouteAvailable: !customer.eudiUpdateBlocked,
     missingItems: accountCheck.missingItems,
     requestedCredentials,
     ...(selectedScope ? { selectedScope } : {}),
@@ -343,6 +345,9 @@ function deterministicReply(
       if (ctx.selectedScope === 'age') {
         return 'Perfect — pot verifica eligibilitatea 18+ prin EUDI Wallet fără să ne partajezi numele, data nașterii sau alte date personale. Primim strict un răspuns Da/Nu.';
       }
+      if (ctx.eudiRouteAvailable === false) {
+        return 'Contul tău necesită verificare suplimentară în sucursală conform politicii ZenBank, așa că actualizarea prin EUDI Wallet nu este disponibilă pentru acest profil. Te rugăm să contactezi un consilier sau să programezi o vizită în sucursală.';
+      }
       if (ctx.selectedScope === 'address') {
         return 'Perfect — îți putem actualiza strict adresa de domiciliu prin EUDI Wallet, fără să solicităm date despre venit sau actul de identitate.';
       }
@@ -352,6 +357,9 @@ function deterministicReply(
       return 'Te ajut cu drag să îți actualizezi datele personale. În loc să încarci documente de identitate sau adeverințe de venit, poți partaja informațiile verificate direct din EUDI Wallet.';
 
     case 'EXPLAIN_PAYMENT_RESTRICTION':
+      if (ctx.eudiRouteAvailable === false && (ctx.paymentRestricted || ctx.dataUpdateRequired)) {
+        return 'Am verificat profilul tău ZenBank: datele necesită actualizare, dar acest cont necesită verificare suplimentară de conformitate în sucursală — actualizarea prin EUDI Wallet nu este disponibilă pentru acest profil.';
+      }
       if (ctx.paymentRestricted) {
         return 'Am identificat motivul: actualizarea datelor tale nu este finalizată, fiind necesară reconfirmarea identității. Putem rezolva acum direct prin EUDI Wallet, fără să reiei procesul de la început.';
       }

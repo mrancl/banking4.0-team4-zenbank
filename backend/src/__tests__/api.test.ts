@@ -545,6 +545,8 @@ describe('ZenBank EUDI API end-to-end journeys', () => {
           documentType: 'urn:banking40:sandbox:address:1',
           validUntil: longExpiry,
           claims: {
+            given_name: 'RADU',
+            family_name: 'STAN',
             address: {
               formatted: 'Strada Exemplului 13, 300001 Timișoara, România',
             },
@@ -563,6 +565,10 @@ describe('ZenBank EUDI API end-to-end journeys', () => {
           documentType: 'urn:banking40:sandbox:income:1',
           validUntil: shortIncomeExpiry,
           claims: {
+            subject: {
+              given_name: 'RADU',
+              family_name: 'STAN',
+            },
             monthly_income: {
               periods: [
                 { month: '2026-09', net_amount_minor: 1652500 },
@@ -675,17 +681,20 @@ describe('ZenBank EUDI API end-to-end journeys', () => {
     expect(declinedCancelRes.body.activeFlowCard.type).toBe('recovery');
     expect(declinedCancelRes.body.activeFlowCard.code).toBe('DECLINED');
     expect(declinedCancelRes.body.activeFlowCard.canRetryEudi).toBe(true);
-    expect(declinedCancelRes.body.activeFlowCard.detail).toContain('access_denied');
+    expect(declinedCancelRes.body.activeFlowCard.detail).toContain('refuzată sau anulată');
+    expect(declinedCancelRes.body.activeFlowCard.detail).not.toContain('access_denied');
   });
 
   it('transitions cleanly to DECLINED recovery card when polling receives DECLINED or REJECTED', async () => {
     const { app, mockVerifier } = await setupTestServer();
     const sid = 'sess-poll-terminal';
 
-    await request(app)
+    const startProfile = await request(app)
       .post('/api/profile/start-update')
       .set('X-Session-Id', sid)
       .send({ scope: 'full' });
+    expect(startProfile.body.activeFlowCard.type).toBe('pre_consent');
+    expect(startProfile.body.activeFlowCard.whyNeeded).toContain('KYC');
 
     const startDeclined = await request(app)
       .post('/api/verifications/start')
@@ -714,7 +723,7 @@ describe('ZenBank EUDI API end-to-end journeys', () => {
       .mockResolvedValueOnce({
         transactionId: txRejected,
         status: 'REJECTED',
-        reason: 'Holder cancelled in wallet',
+        reason: 'The client rejected the request',
       });
 
     const pollRejected = await request(app)
@@ -728,6 +737,8 @@ describe('ZenBank EUDI API end-to-end journeys', () => {
     expect(pollRejected.body.activeFlowCard.type).toBe('recovery');
     expect(pollRejected.body.activeFlowCard.code).toBe('REJECTED');
     expect(pollRejected.body.activeFlowCard.title).toBe('Verificare respinsă');
+    expect(pollRejected.body.activeFlowCard.detail).not.toContain('The client rejected the request');
+    expect(pollRejected.body.activeFlowCard.detail).toContain('Profilul tău ZenBank a rămas neschimbat');
   });
 
   it('transitions cleanly to DECLINED recovery card when /claim returns DECLINED or RESPONSE_CODE_INVALID', async () => {
@@ -843,5 +854,64 @@ describe('ZenBank EUDI API end-to-end journeys', () => {
 
     const refetch = await mockVerifier.fetchSealedResult(txId);
     expect(refetch.kind).toBe('gone');
+  });
+
+  it('blocks bank-ineligible customer (alex) from EUDI profile updates while keeping zero-PII 18+ eligible', async () => {
+    const { app } = await setupTestServer();
+    const sid = 'sess-bank-blocked-alex';
+
+    const switchRes = await request(app)
+      .post('/api/demo/scenario')
+      .set('X-Session-Id', sid)
+      .send({ customerId: 'alex', scenario: 'data_update' });
+    expect(switchRes.status).toBe(200);
+    expect(switchRes.body.customer.eudiUpdateBlocked).toBe(true);
+
+    for (const scope of ['full', 'address', 'income'] as const) {
+      const profRes = await request(app)
+        .post('/api/profile/start-update')
+        .set('X-Session-Id', sid)
+        .send({ scope });
+      expect(profRes.status).toBe(200);
+      expect(profRes.body.stage).toBe('BLOCKED');
+      expect(profRes.body.activeVerification).toBeNull();
+      expect(profRes.body.activeFlowCard.type).toBe('recovery');
+      expect(profRes.body.activeFlowCard.code).toBe('BANK_POLICY_EUDI_BLOCKED');
+      expect(profRes.body.activeFlowCard.canRetryEudi).toBe(false);
+    }
+
+    const blockedStartRes = await request(app)
+      .post('/api/verifications/start')
+      .set('X-Session-Id', sid)
+      .send({});
+    expect(blockedStartRes.status).toBe(403);
+    expect(blockedStartRes.body.code).toBe('BANK_POLICY_EUDI_BLOCKED');
+
+    const chatAddrRes = await request(app)
+      .post('/api/chat')
+      .set('X-Session-Id', sid)
+      .send({ message: 'Mi-am schimbat adresa', quickAction: 'START_DATA_UPDATE', scope: 'address' });
+    expect(chatAddrRes.status).toBe(200);
+    expect(chatAddrRes.body.stage).toBe('BLOCKED');
+    expect(chatAddrRes.body.activeFlowCard.code).toBe('BANK_POLICY_EUDI_BLOCKED');
+    expect(chatAddrRes.body.activeFlowCard.canRetryEudi).toBe(false);
+
+    const chatPayRes = await request(app)
+      .post('/api/chat')
+      .set('X-Session-Id', sid)
+      .send({ message: 'De ce nu pot iniția o plată?', quickAction: 'EXPLAIN_PAYMENT_RESTRICTION' });
+    expect(chatPayRes.status).toBe(200);
+    expect(chatPayRes.body.stage).toBe('BLOCKED');
+    expect(chatPayRes.body.activeFlowCard.code).toBe('BANK_POLICY_EUDI_BLOCKED');
+    const lastPayMsg = chatPayRes.body.messages[chatPayRes.body.messages.length - 1];
+    expect(lastPayMsg.accountCheck?.eudiRouteAvailable).toBe(false);
+
+    const ageChatRes = await request(app)
+      .post('/api/chat')
+      .set('X-Session-Id', sid)
+      .send({ message: 'Verifică eligibilitatea 18+', quickAction: 'START_DATA_UPDATE', scope: 'age' });
+    expect(ageChatRes.status).toBe(200);
+    expect(ageChatRes.body.stage).toBe('PRE_CONSENT');
+    expect(ageChatRes.body.activeFlowCard.profileCode).toBe('age-18');
   });
 });

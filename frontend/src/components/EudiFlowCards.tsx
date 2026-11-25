@@ -4,6 +4,7 @@ import {
   BriefcaseBusiness,
   Check,
   CheckCircle2,
+  ChevronDown,
   Clock,
   Copy,
   ExternalLink,
@@ -314,6 +315,31 @@ export function EudiCardRenderer({
           ))}
         </div>
 
+        {(card.whyNeeded || card.excludedItems.length > 0) && (
+          <details className="policy-details">
+            <summary className="policy-summary">
+              <span className="policy-summary-left">
+                <ShieldCheck size={14} color="var(--zen-primary)" />
+                <span>De ce avem nevoie de aceste date</span>
+              </span>
+              <ChevronDown size={14} className="policy-chevron" />
+            </summary>
+            <div className="policy-body">
+              {card.whyNeeded && <p className="policy-text">{card.whyNeeded}</p>}
+              {card.excludedItems.length > 0 && (
+                <div className="policy-excluded">
+                  <div className="excluded-box-title">Ce NU solicităm / NU salvăm</div>
+                  <ul>
+                    {card.excludedItems.map((item) => (
+                      <li key={item}>{item}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          </details>
+        )}
+
         <div className="mobile-card-actions">
           <button
             type="button"
@@ -431,10 +457,20 @@ export function EudiCardRenderer({
           </div>
         )}
 
-        <div className="info-banner">
-          <ShieldCheck size={15} color="var(--zen-primary)" style={{ flexShrink: 0, marginTop: 1 }} />
-          <span>{diffCard.revocationNote}</span>
-        </div>
+        {diffCard.revocationNote && (
+          <details className="policy-details">
+            <summary className="policy-summary">
+              <span className="policy-summary-left">
+                <ShieldCheck size={14} color="var(--zen-primary)" />
+                <span>Politica de confirmare și protecție a datelor</span>
+              </span>
+              <ChevronDown size={14} className="policy-chevron" />
+            </summary>
+            <div className="policy-body">
+              <p className="policy-text">{diffCard.revocationNote}</p>
+            </div>
+          </details>
+        )}
 
         <div className="mobile-card-actions">
           {canUpdateProfile && (

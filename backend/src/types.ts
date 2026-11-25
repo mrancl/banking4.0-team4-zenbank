@@ -36,6 +36,8 @@ export interface ZenBankCustomerProfile {
   lastReconfirmedAt: string | null;
   addressVerified?: boolean;
   incomeVerified?: boolean;
+  eudiUpdateBlocked?: boolean;
+  eudiBlockedReason?: string | null;
 }
 
 export interface TrustCheckItem {
@@ -177,6 +179,7 @@ export interface ZeroPiiAgentContext {
   paymentRestricted: boolean;
   restrictionCode: 'NONE' | 'KYC_UPDATE_INCOMPLETE';
   dataUpdateRequired: boolean;
+  eudiRouteAvailable?: boolean;
   missingItems: string[];
   requestedCredentials: Array<'PID' | 'ADDRESS' | 'INCOME' | 'AGE_18'>;
   selectedScope?: VerificationScope;
@@ -197,6 +200,7 @@ export type ChatCard =
       scope?: VerificationScope;
       profileCode?: string;
       purpose: string;
+      whyNeeded?: string;
       requestedCredentials: Array<{
         credential: string;
         vct: string;

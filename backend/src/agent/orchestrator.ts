@@ -125,6 +125,8 @@ function buildPreConsentCard(scope: VerificationScope, profileCode: string): Cha
       scope,
       profileCode,
       purpose: 'Decizie 18+ · 0 PII',
+      whyNeeded:
+        'Confirmăm exclusiv că ai minimum 18 ani pentru eligibilitatea produselor bancare, fără a solicita sau stoca numele, CNP-ul ori data nașterii.',
       requestedCredentials: [
         {
           credential: 'Confirmare vârstă (18+)',
@@ -160,9 +162,16 @@ function buildPreConsentCard(scope: VerificationScope, profileCode: string): Cha
       scope,
       profileCode,
       purpose: 'Doar adresă',
-      requestedCredentials: [addressCred],
+      whyNeeded:
+        'Avem nevoie să verificăm noua ta adresă de domiciliu conform cerințelor bancare (KYC) și pentru livrarea corespondenței. Numele și prenumele sunt verificate doar pentru a confirma că documentul îți aparține.',
+      requestedCredentials: [
+        {
+          ...addressCred,
+          attributes: ['Adresa completă', 'Nume și prenume (verificare titular)'],
+        },
+      ],
       excludedItems: [
-        'Nu solicităm date despre venit, angajator sau datele din actul de identitate',
+        'Nu solicităm date despre venit, angajator, CNP sau data nașterii',
         'Nu stocăm CNP-ul și nici locul nașterii',
         'Nu încarci facturi de utilități sau poze cu documente',
       ],
@@ -175,16 +184,18 @@ function buildPreConsentCard(scope: VerificationScope, profileCode: string): Cha
       scope,
       profileCode,
       purpose: 'Doar venit',
+      whyNeeded:
+        'Avem nevoie de intervalul tău de venit pentru actualizarea periodică a profilului KYC, fără adeverințe PDF. Numele și prenumele sunt verificate doar pentru a confirma că atestarea îți aparține.',
       requestedCredentials: [
         {
           credential: 'Atestare venit',
           vct: 'urn:banking40:sandbox:income:1',
-          attributes: ['Interval de venit (media pe 6 luni)', 'Moneda'],
+          attributes: ['Interval de venit (media pe 6 luni)', 'Moneda', 'Nume și prenume (verificare titular)'],
           why: 'Actualizează intervalul tău de venit în profilul bancar fără adeverință de salariu.',
         },
       ],
       excludedItems: [
-        'Nu solicităm adresa de domiciliu și nici datele din actul de identitate',
+        'Nu solicităm adresa de domiciliu, CNP-ul sau data nașterii',
         'Nu salvăm sumele exacte lunare — reținem doar intervalul de venit',
         'Nu încarci adeverințe de salariu sau extrase PDF',
       ],
@@ -196,6 +207,8 @@ function buildPreConsentCard(scope: VerificationScope, profileCode: string): Cha
     scope,
     profileCode,
     purpose: 'Profil complet',
+    whyNeeded:
+      'Banca are obligația legală de cunoaștere a clientelei (KYC) să păstreze la zi identitatea, adresa și sursa ta de venit pentru a-ți menține contul și plățile active. Verificăm titularul fiecărui document pentru a preveni asocierea datelor altei persoane.',
     requestedCredentials: [
       pidCred,
       addressCred,
@@ -210,6 +223,24 @@ function buildPreConsentCard(scope: VerificationScope, profileCode: string): Cha
       'Nu stocăm CNP-ul și nici locul nașterii',
       'Nu salvăm sumele exacte lunare — reținem doar intervalul de venit',
       'Nu încarci poze cu actul de identitate, facturi sau adeverințe',
+    ],
+  };
+}
+
+function buildBankBlockedProfileCard(customer: ZenBankCustomerProfile): ChatCard {
+  return {
+    type: 'recovery',
+    code: 'BANK_POLICY_EUDI_BLOCKED',
+    title: 'Actualizarea prin EUDI Wallet nu este disponibilă',
+    detail:
+      customer.eudiBlockedReason ||
+      'Contul tău necesită verificare suplimentară în sucursală conform politicii băncii. EUDI Wallet nu este utilizat pentru acest tip de actualizare.',
+    simulated: false,
+    canRetryEudi: false,
+    canConfirmIdentityOnly: false,
+    fallbackOptions: [
+      'Programează o vizită într-o sucursală ZenBank cu actul de identitate în original',
+      'Contactează un consilier ZenBank pentru analiza manuală a profilului',
     ],
   };
 }
@@ -426,21 +457,42 @@ export class JourneyOrchestrator {
 
     let card: ChatCard | undefined;
     let accountCheck: AccountStatusCheck | undefined;
+    let agentText = reply.reply;
     if (reply.intent === 'START_DATA_UPDATE') {
       const scope: VerificationScope = requestedScope ?? reply.requestedScope ?? 'full';
       const profileCode = resolveProfileCode(scope, this.deps.profileCode);
-      session.flowChannel = 'chat';
-      session.selectedScope = scope;
-      session.selectedProfileCode = profileCode;
-      session.stage = 'PRE_CONSENT';
-      card = buildPreConsentCard(scope, profileCode);
-      session.activeFlowCard = card;
-      this.addAudit(
-        session,
-        'AGENT',
-        'PRE_CONSENT_PREPARED',
-        `Rutare dinamică profil EUDI (scope=${scope}, profile=${profileCode}, kyc=${session.customer.kycStatus}, usedGemini=${String(reply.usedGemini)}).`,
-      );
+      if (session.customer.eudiUpdateBlocked && scope !== 'age') {
+        session.flowChannel = 'chat';
+        session.selectedScope = scope;
+        session.selectedProfileCode = profileCode;
+        session.stage = 'BLOCKED';
+        session.activeVerification = null;
+        session.pendingUpdate = null;
+        card = buildBankBlockedProfileCard(session.customer);
+        session.activeFlowCard = card;
+        agentText =
+          session.customer.eudiBlockedReason ||
+          'Contul tău necesită verificare suplimentară în sucursală, așa că actualizarea prin EUDI Wallet nu este disponibilă pentru acest profil.';
+        this.addAudit(
+          session,
+          'RULES',
+          'BANK_POLICY_EUDI_BLOCKED',
+          `Blocată inițierea actualizării EUDI din Chat (scope=${scope}, customer=${session.customer.id}) conform politicii băncii.`,
+        );
+      } else {
+        session.flowChannel = 'chat';
+        session.selectedScope = scope;
+        session.selectedProfileCode = profileCode;
+        session.stage = 'PRE_CONSENT';
+        card = buildPreConsentCard(scope, profileCode);
+        session.activeFlowCard = card;
+        this.addAudit(
+          session,
+          'AGENT',
+          'PRE_CONSENT_PREPARED',
+          `Rutare dinamică profil EUDI (scope=${scope}, profile=${profileCode}, kyc=${session.customer.kycStatus}, usedGemini=${String(reply.usedGemini)}).`,
+        );
+      }
     } else if (reply.intent === 'EXPLAIN_PAYMENT_RESTRICTION') {
       activatePaymentRestrictionIfUpdateNeeded(session.customer);
       accountCheck = checkCustomerAccountStatus(session.customer);
@@ -450,7 +502,25 @@ export class JourneyOrchestrator {
         'ACCOUNT_DATA_CHECKED',
         `Verificat profil client ZenBank (dataUpdateRequired=${String(accountCheck.dataUpdateRequired)}, paymentRestricted=${String(accountCheck.paymentRestricted)}, missing=${accountCheck.missingItems.join(', ') || 'none'}).`,
       );
-      if (accountCheck.dataUpdateRequired) {
+      if (accountCheck.dataUpdateRequired && session.customer.eudiUpdateBlocked) {
+        session.flowChannel = 'chat';
+        session.selectedScope = 'full';
+        session.selectedProfileCode = this.deps.profileCode;
+        session.stage = 'BLOCKED';
+        session.activeVerification = null;
+        session.pendingUpdate = null;
+        card = buildBankBlockedProfileCard(session.customer);
+        session.activeFlowCard = card;
+        agentText =
+          session.customer.eudiBlockedReason ||
+          'Am verificat profilul tău ZenBank: datele necesită actualizare, dar acest cont necesită verificare suplimentară în sucursală — actualizarea prin EUDI Wallet nu este disponibilă.';
+        this.addAudit(
+          session,
+          'RULES',
+          'BANK_POLICY_EUDI_BLOCKED',
+          `Restricție de plăți detectată, dar EUDI self-service este blocat de bancă pentru ${session.customer.id}; se solicită vizită în sucursală.`,
+        );
+      } else if (accountCheck.dataUpdateRequired) {
         const idNeeded = accountCheck.checks.find((c) => c.id === 'identity')?.status !== 'OK';
         const addrNeeded = accountCheck.checks.find((c) => c.id === 'address')?.status !== 'OK';
         const incNeeded = accountCheck.checks.find((c) => c.id === 'income')?.status !== 'OK';
@@ -512,7 +582,7 @@ export class JourneyOrchestrator {
       language: session.language,
     });
 
-    this.addMessage(session, 'agent', reply.reply, card, accountCheck);
+    this.addMessage(session, 'agent', agentText, card, accountCheck);
     return this.getPublicState(sessionId);
   }
 
@@ -522,6 +592,33 @@ export class JourneyOrchestrator {
   startProfileUpdate(sessionId: string, scope: VerificationScope = 'full'): SessionPublicState {
     const session = this.getSessionInternal(sessionId);
     const profileCode = resolveProfileCode(scope, this.deps.profileCode);
+
+    if (session.customer.eudiUpdateBlocked && scope !== 'age') {
+      const blockedCard = buildBankBlockedProfileCard(session.customer);
+      session.flowChannel = 'profile';
+      session.selectedScope = scope;
+      session.selectedProfileCode = profileCode;
+      session.stage = 'BLOCKED';
+      session.activeFlowCard = blockedCard;
+      session.activeVerification = null;
+      session.pendingUpdate = null;
+      session.lastZeroPiiContext = buildZeroPiiContext({
+        stage: session.stage,
+        customer: session.customer,
+        evaluation: session.lastEvaluation,
+        selectedScope: scope,
+        selectedProfileCode: profileCode,
+        language: session.language,
+      });
+      this.addAudit(
+        session,
+        'RULES',
+        'BANK_POLICY_EUDI_BLOCKED',
+        `Actualizare EUDI refuzată de politica băncii din pagina Datele mele (scope=${scope}, customer=${session.customer.id}).`,
+      );
+      return this.getPublicState(sessionId);
+    }
+
     const card = buildPreConsentCard(scope, profileCode);
 
     session.flowChannel = 'profile';
@@ -607,6 +704,14 @@ export class JourneyOrchestrator {
   ): Promise<SessionPublicState> {
     const session = this.getSessionInternal(sessionId);
     const scope = session.selectedScope ?? 'full';
+    if (session.customer.eudiUpdateBlocked && scope !== 'age') {
+      throw new VerifierHttpError(
+        403,
+        'BANK_POLICY_EUDI_BLOCKED',
+        session.customer.eudiBlockedReason ||
+          'Actualizarea prin EUDI Wallet nu este eligibilă pentru acest cont conform politicii băncii.',
+      );
+    }
     const profileCode =
       session.selectedProfileCode || resolveProfileCode(scope, this.deps.profileCode);
 
@@ -1139,10 +1244,17 @@ export class JourneyOrchestrator {
         'SECURITY_BLOCKED',
         `Modificare profil blocată: ${evaluation.reasonCode}.`,
       );
+      const blockedTitles: Record<string, string> = {
+        CROSS_CREDENTIAL_SUBJECT_MISMATCH: 'Documentele aparțin unor persoane diferite',
+        CUSTOMER_SUBJECT_MISMATCH: 'Titular diferit față de contul ZenBank',
+        MISSING_CREDENTIAL_SUBJECT_BINDING: 'Lipsesc datele de identificare a titularului',
+        CREDENTIAL_EXPIRED: 'Document expirat în EUDI Wallet',
+        CREDENTIAL_INTEGRITY_FAILED: 'Autenticitatea documentelor nu a putut fi confirmată',
+      };
       const card: ChatCard = {
         type: 'recovery',
         code: evaluation.reasonCode,
-        title: 'Nu putem aplica această actualizare',
+        title: blockedTitles[evaluation.reasonCode] ?? 'Nu putem aplica această actualizare',
         detail: evaluation.message,
         simulated,
         canRetryEudi: true,
@@ -1208,48 +1320,63 @@ export class JourneyOrchestrator {
     statusCode: string,
     reason?: string,
   ): void {
+    const scope = session.activeVerification?.scope ?? session.selectedScope ?? 'full';
     session.activeVerification = null;
     session.pendingUpdate = null;
     session.stage = 'DECLINED';
 
+    const rawReason = (reason ?? '').trim();
+    const isExpiredReason = /expir/i.test(rawReason);
+    const isMissingCredReason = /no matching|missing|credential|not found/i.test(rawReason);
+    const declinedDetail =
+      scope === 'age'
+        ? 'Confirmarea de eligibilitate 18+ a fost refuzată sau anulată în EUDI Wallet. Nicio dată personală nu a fost partajată, iar profilul tău ZenBank a rămas neschimbat.'
+        : isMissingCredReason
+          ? 'EUDI Wallet nu a putut furniza toate documentele valide solicitate (verifică să ai emise documente valide pentru numele tău). Profilul tău ZenBank a rămas neschimbat.'
+          : 'Cererea de partajare a fost refuzată sau anulată în EUDI Wallet (ai apăsat Refuz/Anulează sau portofelul nu conține toate documentele valide necesare). Profilul tău ZenBank a rămas neschimbat.';
+
+    const rejectedDetail = isExpiredReason
+      ? 'Unul dintre documentele sau cererea din EUDI Wallet a expirat înainte de finalizare. Profilul tău ZenBank a rămas neschimbat — reemite documentele și reîncearcă.'
+      : isMissingCredReason
+        ? 'EUDI Wallet nu a putut furniza toate documentele solicitate cu numele titularului. Profilul tău ZenBank a rămas neschimbat.'
+        : 'Cererea de verificare a fost respinsă în EUDI Wallet (fie ai refuzat partajarea, fie documentele prezentate nu îndeplinesc cerințele cererii). Profilul tău ZenBank a rămas neschimbat.';
+
     const detailMap: Record<string, { title: string; detail: string }> = {
       DECLINED: {
-        title: 'Partajare refuzată în wallet',
-        detail:
-          reason ||
-          'Ai ales să nu partajezi datele în EUDI Wallet. Profilul tău ZenBank nu a fost modificat.',
+        title:
+          scope === 'age'
+            ? 'Verificarea 18+ a fost refuzată în wallet'
+            : 'Partajarea a fost refuzată în EUDI Wallet',
+        detail: declinedDetail,
       },
       CANCELLED: {
         title: 'Verificare anulată',
-        detail: 'Ai anulat verificarea în EUDI Wallet. Profilul tău ZenBank a rămas neschimbat.',
+        detail:
+          'Ai anulat verificarea înainte de finalizare. Profilul tău ZenBank a rămas neschimbat.',
       },
       REJECTED: {
         title: 'Verificare respinsă',
-        detail:
-          reason ||
-          'Verificarea din EUDI Wallet nu a îndeplinit cerințele. Profilul tău ZenBank a rămas neschimbat.',
+        detail: rejectedDetail,
       },
       RESPONSE_RECEIVED: {
         title: 'Răspuns incomplet de la EUDI Wallet',
         detail:
-          reason ||
-          'Verificarea s-a încheiat fără un rezultat aprobat. Poți reîncerca verificarea.',
+          'Verificarea s-a încheiat fără un rezultat aprobat din EUDI Wallet. Profilul tău ZenBank a rămas neschimbat — poți reîncerca.',
       },
       FAILED: {
-        title: 'Verificarea a eșuat',
+        title: 'Verificarea nu a putut fi finalizată',
         detail:
-          reason ||
-          'Verificarea nu a putut fi finalizată în EUDI Wallet. Te rugăm să reîncerci.',
+          'Aplicația EUDI Wallet a returnat o eroare sau nu a putut prezenta documentele solicitate. Profilul tău ZenBank a rămas neschimbat — poți reîncerca verificarea.',
       },
       EXPIRED: {
         title: 'Cererea de verificare a expirat',
         detail:
-          'Timpul de 5 minute pentru aprobare a expirat. Poți porni oricând o verificare nouă.',
+          'Timpul de 5 minute pentru aprobare în EUDI Wallet a expirat. Poți porni oricând o verificare nouă.',
       },
       VERIFICATION_EXPIRED: {
         title: 'Cererea de verificare a expirat',
         detail:
-          'Cererea de verificare a expirat înainte de finalizare. Poți porni o verificare nouă.',
+          'Cererea de verificare a expirat înainte de finalizare. Poți porni oricând o verificare nouă.',
       },
       RESPONSE_CODE_INVALID: {
         title: 'Cod de confirmare expirat sau invalid',
@@ -1257,24 +1384,26 @@ export class JourneyOrchestrator {
           'Codul de confirmare din EUDI Wallet nu mai este valabil. Te rugăm să pornești o verificare nouă.',
       },
       WALLET_ERROR: {
-        title: 'Eroare în aplicația EUDI Wallet',
+        title: 'Verificarea nu a putut fi finalizată',
         detail:
-          reason ||
-          'Aplicația wallet a întâmpinat o eroare temporară. Poți reîncerca sau folosi opțiunea clasică cu documente.',
+          'Aplicația EUDI Wallet a returnat o eroare sau nu a putut prezenta documentele solicitate. Profilul tău ZenBank a rămas neschimbat — poți reîncerca verificarea.',
       },
       RESULT_GONE: {
         title: 'Sesiune de verificare expirată',
-        detail: 'Această cerere a fost deja procesată sau a expirat. Te rugăm să pornești o verificare nouă.',
+        detail:
+          'Această cerere a fost deja procesată sau a expirat. Te rugăm să pornești o verificare nouă.',
       },
       RESULT_NOT_SEALED: {
         title: 'Răspuns incomplet de la EUDI Wallet',
-        detail: 'Nu am primit un răspuns complet din EUDI Wallet. Te rugăm să încerci din nou.',
+        detail:
+          'Nu am primit un răspuns complet din EUDI Wallet. Profilul tău ZenBank a rămas neschimbat — te rugăm să încerci din nou.',
       },
     };
 
     const info = detailMap[statusCode] ?? {
-      title: `Verificare întreruptă (${statusCode})`,
-      detail: reason || 'Verificarea EUDI nu a putut fi finalizată.',
+      title: 'Verificarea nu a fost finalizată',
+      detail:
+        'Verificarea în EUDI Wallet a fost întreruptă sau refuzată înainte de confirmare. Profilul tău ZenBank a rămas neschimbat — poți reîncerca oricând.',
     };
 
     session.lastTrustChecks = [
@@ -1282,7 +1411,7 @@ export class JourneyOrchestrator {
         id: 'verifier_status',
         label: 'Status tranzacție Verifier',
         status: 'FAIL',
-        detail: `Status final: ${statusCode}`,
+        detail: `Status final: ${statusCode}${rawReason ? ` (${rawReason})` : ''}`,
       },
     ];
 
@@ -1293,6 +1422,14 @@ export class JourneyOrchestrator {
       language: session.language,
     });
 
+    const fallbackOptions =
+      scope === 'age'
+        ? ['Reîncearcă verificarea eligibilității 18+ în EUDI Wallet']
+        : [
+            'Verifică în EUDI Wallet că ai documente valide emise pe numele tău și reîncearcă',
+            'Alternativ, poți continua prin sucursală cu documentele clasice',
+          ];
+
     const card: ChatCard = {
       type: 'recovery',
       code: statusCode,
@@ -1301,10 +1438,7 @@ export class JourneyOrchestrator {
       simulated: false,
       canRetryEudi: true,
       canConfirmIdentityOnly: false,
-      fallbackOptions: [
-        'Reîncearcă verificarea cu EUDI Wallet',
-        'Continuă cu încărcarea manuală a actului de identitate, dovezii de adresă și adeverinței de venit',
-      ],
+      fallbackOptions,
     };
     session.activeFlowCard = card;
 
